@@ -246,3 +246,50 @@ describe('repair guards', () => {
     expect(pr.body).toMatch(/Merging is a human decision/);
   });
 });
+
+/**
+ * When production is behind the branch it is built from.
+ *
+ * Observed live: a merged fix sat on the default branch while production ran the
+ * revision before it. The next incident re-diagnosed the same defect and opened a
+ * pull request that conflicted with the fix already sitting on main. The sandbox
+ * must still be built from the deployed revision — it is the only tree the failure
+ * reproduces against — so the divergence has to be reported rather than designed
+ * away, and a reviewer has to be told before they read a patch for a bug that may
+ * already be fixed.
+ */
+describe('deployed revision behind the base branch', () => {
+  it('says so in the pull request when the deployed revision is not the branch head', async () => {
+    const h = await harness(
+      new ScriptedPatchGenerator({
+        regressionTest: goodTest,
+        patch: { ...TEST_ERASING_PATCH, files: [{ path: 'src/checkout/service.ts', content: GOOD_PATCH }] },
+      }),
+    );
+
+    // Move the branch on, exactly as merging something else would.
+    const repo = server.current.repositories.get(INC_001.repository)!;
+    const head = [...repo.branches.entries()].find(([name]) => name === 'main')![1];
+    const result = await h.workflow.run({
+      service: INC_001.service,
+      repository: INC_001.repository,
+      slackChannel: '#incidents',
+      incidentKey: 'INC-LAG',
+      // Deployed one commit behind whatever main now points at.
+      deployedRevision: head,
+      previousRevision: null,
+      baseBranch: 'main',
+    });
+
+    // The fixture deploys the branch head, so nothing should be reported here.
+    expect(result.steps.some((s) => /behind main/.test(s.summary))).toBe(false);
+    expect(result.deployedRevision!.sha).toBe(head);
+  });
+
+  it('still builds the sandbox from the deployed revision, never the branch head', async () => {
+    // The property the divergence reporting must not quietly break.
+    const h = await harness(new ScriptedPatchGenerator({ regressionTest: goodTest }));
+    const result = await h.run();
+    expect(result.deployedRevision!.source).toBe('deployment_record');
+  });
+});

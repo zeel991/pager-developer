@@ -564,8 +564,48 @@ export class IncidentWorkflow {
       return await halt(`No diagnosis was reached: ${why} No pull request was opened.`);
     }
 
-    // ── 5. Work the fix on a branch ──────────────────────────────────────────
+    // ── 4c. Is production even running what the branch says? ─────────────────
+    //
+    // The sandbox is built from the DEPLOYED revision, because that is the only
+    // tree the failure can be reproduced against. But a fix branches from there
+    // too, so when the base branch has moved on the resulting pull request
+    // conflicts — and, worse, the failure may already be fixed on that branch and
+    // simply not deployed. "Production is behind; the fix may already exist" is a
+    // real finding, and an agent that cannot reach it will keep writing patches
+    // nobody needs.
+    //
+    // Observed: a merged fix sat on the default branch for twenty minutes while
+    // production ran the revision before it. The next incident re-diagnosed the
+    // same defect and opened a conflicting pull request against code that was
+    // already correct.
     const baseBranch = input.baseBranch ?? 'main';
+    let deploymentLag: string | null = null;
+    try {
+      const baseHead = await trace('RepositoryInvestigator', async (ctx) => {
+        const { value } = await ctx.tool('github.listCommits', { repo: input.repository, ref: baseBranch }, () =>
+          this.deps.sourceControl.listCommits(input.repository, { ref: baseBranch, limit: 1 }),
+        );
+        return value[0] ?? null;
+      });
+      const baseHeadSha = baseHead?.sha ?? null;
+      if (baseHeadSha && baseHeadSha !== revision.sha) {
+        deploymentLag =
+          `Production is running ${revision.sha.slice(0, 12)} while ${baseBranch} is at ` +
+          `${baseHeadSha.slice(0, 12)}. The deployed revision is NOT the head of the branch, so ` +
+          `the failure may already be fixed on ${baseBranch} and simply not deployed — and any ` +
+          `patch written against the deployed tree may conflict with what is already there. ` +
+          `Check ${baseBranch} before treating this as unfixed.`;
+        step('identified', `Deployed revision is behind ${baseBranch}.`, {
+          deployed: revision.sha,
+          baseHead: baseHeadSha,
+        });
+        await note('deployment_behind_base', deploymentLag);
+      }
+    } catch (err) {
+      deploymentLag = `Could not compare the deployed revision against ${baseBranch}: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+    }
     const sandbox = await Sandbox.create(this.deps.sourceControl, input.repository, revision.sha, {
       ...(input.sandboxRoot ? { rootDir: input.sandboxRoot } : {}),
     });
@@ -708,6 +748,7 @@ export class IncidentWorkflow {
               test: proposedTest,
               revision,
               findings,
+              deploymentLag,
               issue: result.issue,
               slackChannel: input.slackChannel,
               slackThreadTs: thread.id,
@@ -1519,6 +1560,8 @@ export class IncidentWorkflow {
     test: RegressionTestProposal;
     revision: DeployedRevision;
     findings: InvestigationResult['findings'];
+    /** Set when the deployed revision is not the head of the base branch. */
+    deploymentLag: string | null;
     issue: { key: string; url: string } | null;
     slackChannel: string;
     slackThreadTs: string;
@@ -1546,7 +1589,8 @@ export class IncidentWorkflow {
 
       `## What production was running\n\`${args.revision.sha}\`\n${args.revision.description}\n` +
         `Every check below ran against **that** revision, not against the head of the base branch.` +
-        (args.diffGap ? `\n\n> Gap: ${args.diffGap}` : ''),
+        (args.diffGap ? `\n\n> Gap: ${args.diffGap}` : '') +
+        (args.deploymentLag ? `\n\n> ⚠️ **${args.deploymentLag}**` : ''),
 
       `## Root cause\n${args.patch.rootCause}`,
 
