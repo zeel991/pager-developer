@@ -31,6 +31,39 @@ pnpm --filter @pager/web dev   # dashboard on http://127.0.0.1:4100
 
 `pnpm verify` runs typecheck, lint, tests and build. It must pass before any commit.
 
+### Running it as a service
+
+`apps/worker` is Pager Developer with nobody typing anything. It watches a real
+Datadog account on a loop and, when a monitor alerts on something undocumented,
+investigates, reproduces the failure against the exact revision production is
+running, validates a fix and opens a pull request for a human — then goes back to
+watching.
+
+```bash
+pnpm --filter @pager/worker start        # watch continuously
+pnpm --filter @pager/worker once         # a single check, then exit
+```
+
+It needs `PAGER_SERVICE`, `PAGER_REPOSITORY`, `PAGER_HEALTH_URL`,
+`PAGER_SLACK_CHANNEL`, the Datadog pair, `GITHUB_TOKEN`, `SLACK_BOT_TOKEN` and
+`ANTHROPIC_API_KEY`, and refuses to start without them — a gap discovered
+mid-incident is worse than one discovered at boot.
+
+`PAGER_READ_ONLY=1` drops it to L2: it investigates, reproduces and validates, but
+may not open a pull request. It never merges and never deploys at any level.
+
+**It asks the service what revision it is running**, via `PAGER_HEALTH_URL`, and
+skips the tick when the service cannot say. Expose your build revision there (on
+Render, `process.env.RENDER_GIT_COMMIT`). Every claim the system makes rests on
+having tested the tree that is actually failing, so this is not inferred.
+
+`GET /status` reports ticks, the last outcome, the incidents opened and the
+revisions already acted on. One incident per deployed revision: a monitor stays red
+for as long as the bug is live, and a worker that opened a pull request on every
+poll would be indistinguishable from a denial of service against its own reviewers.
+That memory is per-process, so a restart can re-open a pull request for a revision
+an earlier process already handled.
+
 ### Running it live
 
 The demo can point at real infrastructure, one adapter at a time, chosen from
