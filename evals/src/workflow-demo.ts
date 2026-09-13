@@ -101,7 +101,19 @@ async function main(): Promise<void> {
 
   const sink = new InMemorySink();
   const tracer = new AgentTracer({ sink, lemma: lemmaFromEnv() });
-  const observability = new DatadogProvider({ baseUrl: endpoints.datadog });
+  // Observability can point at a real Datadog account. The repository, ticket and
+  // knowledge base stay on the twin: this run must not create a branch in a real
+  // repository, and there is no GitHub credential wired for one.
+  const datadogIsReal =
+    process.env.PAGER_OBSERVABILITY_BACKEND === 'real' &&
+    Boolean(process.env.DATADOG_API_KEY && process.env.DATADOG_APP_KEY);
+  const observability = datadogIsReal
+    ? new DatadogProvider({
+        baseUrl: process.env.DATADOG_BASE_URL ?? 'https://api.datadoghq.com',
+        apiKey: process.env.DATADOG_API_KEY!,
+        appKey: process.env.DATADOG_APP_KEY!,
+      })
+    : new DatadogProvider({ baseUrl: endpoints.datadog });
   const sourceControl = new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() });
   const knowledge = new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' });
 
@@ -157,8 +169,9 @@ async function main(): Promise<void> {
 
   rule('Pager Developer — full incident workflow (local twins)');
   console.log(
-    `  Connections   github/datadog/jira/notion → LOCAL twins on 127.0.0.1\n` +
-      `                slack → ${slackIsReal ? `REAL workspace, channel ${slackChannel}` : 'LOCAL twin'}`,
+    `  Connections   github/jira/notion → LOCAL twins on 127.0.0.1\n` +
+      `                datadog → ${datadogIsReal ? 'REAL account (api.datadoghq.com)' : 'LOCAL twin'}\n` +
+      `                slack   → ${slackIsReal ? `REAL workspace, channel ${slackChannel}` : 'LOCAL twin'}`,
   );
   console.log(`  Model         ${availability.available ? `${availability.model} (LIVE)` : `none — ${availability.reason}`}`);
   console.log(`  Authorship    ${model ? 'model-authored regression test and patch' : 'SCRIPTED fixture, no reasoning happened'}`);
@@ -185,7 +198,7 @@ async function main(): Promise<void> {
   console.log(`  Deployed rev  ${deployment.commitSha.slice(0, 12)} (from the deployment record, not the branch head)\n`);
 
   const result = await workflow.run({
-    service: spec.service,
+    service: process.env.PAGER_SERVICE ?? spec.service,
     repository: spec.repository,
     slackChannel,
     incidentKey: 'INC-184',
