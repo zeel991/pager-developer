@@ -206,3 +206,43 @@ describe('toRepositoryPath on real runtimes', () => {
     expect(frames[0]!.line).toBe(22);
   });
 });
+
+/**
+ * Log shapes observed on a real deployment.
+ *
+ * Structured JSON loggers split the error type into its own field and name the
+ * route plainly. Reading only the OpenTelemetry keys reported "Error on unknown
+ * route" for a log that stated both — a small untruth that then appears in the
+ * ticket, the Slack message and the pull request.
+ */
+describe('clustering real structured logs', () => {
+  const entry = (): LogEntry => ({
+    at: new Date('2026-09-14T00:20:00Z'),
+    service: 'checkout-api',
+    level: 'error',
+    message: "Cannot read properties of undefined (reading 'percentOff')",
+    stackTrace:
+      "TypeError: Cannot read properties of undefined (reading 'percentOff')\n" +
+      '    at CheckoutService.createOrder (file:///opt/render/project/src/src/checkout/service.ts:22:60)',
+    attributes: { error: 'TypeError', route: '/orders', http_status: 500 },
+  });
+
+  it('takes the error type from its own field when the message has no prefix', () => {
+    expect(clusterErrors([entry()])[0]!.errorType).toBe('TypeError');
+  });
+
+  it('finds the route under a plain `route` key', () => {
+    expect(clusterErrors([entry()])[0]!.affectedRoutes).toEqual(['/orders']);
+  });
+
+  it('still prefers the type stated in the message', () => {
+    const log = { ...entry(), message: 'RangeError: out of bounds', attributes: { error: 'TypeError' } };
+    expect(clusterErrors([log])[0]!.errorType).toBe('RangeError');
+  });
+
+  it('locates the failure in a repository file', () => {
+    const frame = clusterErrors([entry()])[0]!.topApplicationFrame!;
+    expect(toRepositoryPath(frame.file)).toBe('src/checkout/service.ts');
+    expect(frame.line).toBe(22);
+  });
+});

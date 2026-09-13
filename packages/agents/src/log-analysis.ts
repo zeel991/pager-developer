@@ -168,7 +168,7 @@ export function clusterErrors(logs: readonly LogEntry[]): ErrorCluster[] {
     clusters.set(signature, {
       signature,
       sample: log.message,
-      errorType: errorType(log.message),
+      errorType: errorTypeOf(log),
       count: 1,
       firstSeen: log.at,
       lastSeen: log.at,
@@ -184,9 +184,41 @@ export function clusterErrors(logs: readonly LogEntry[]): ErrorCluster[] {
   return [...clusters.values()].sort((a, b) => b.count - a.count);
 }
 
+/**
+ * The route a failure happened on.
+ *
+ * `http.route` is the OpenTelemetry convention, but plenty of services log a plain
+ * `route` or `path`, and one observed on a real deployment used `route`. Reporting
+ * "unknown route" when the log plainly carries one is a small lie that shows up in
+ * every message the incident produces.
+ */
+const ROUTE_KEYS = ['http.route', 'route', 'http.path', 'path', 'url.path'];
+
 function routeOf(log: LogEntry): string | null {
-  const route = log.attributes['http.route'];
-  return typeof route === 'string' ? route : null;
+  for (const key of ROUTE_KEYS) {
+    const value = log.attributes[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * The error type, from the message or from a field carrying it separately.
+ *
+ * A service that logs structured JSON usually splits the type out (`error:
+ * "TypeError"`) rather than prefixing the message with it, so parsing the message
+ * alone reports no type for a log that states it explicitly.
+ */
+const ERROR_TYPE_KEYS = ['error', 'error.kind', 'error.type', 'exception.type'];
+
+function errorTypeOf(log: LogEntry): string | null {
+  const fromMessage = errorType(log.message);
+  if (fromMessage) return fromMessage;
+  for (const key of ERROR_TYPE_KEYS) {
+    const value = log.attributes[key];
+    if (typeof value === 'string' && /^[A-Z][A-Za-z0-9_]*$/.test(value)) return value;
+  }
+  return null;
 }
 
 /**
