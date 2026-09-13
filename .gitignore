@@ -9,3 +9,4 @@ coverage/
 .pager/
 sandboxes/
 .arga-run
+.next/
