@@ -4,6 +4,7 @@ export * from './telemetry-collector.js';
 export * from './incident-engine.js';
 export * from './communication.js';
 export * from './approval.js';
+export * from './merge-approval.js';
 export * from './recovery.js';
 export * from './log-analysis.js';
 export * from './production-watcher.js';

@@ -72,6 +72,19 @@ export interface SourceControlProvider {
   createPullRequest(repo: string, input: CreatePullRequestInput): Promise<PullRequest>;
   /** Commit a set of file changes onto a branch. `null` content deletes a file. */
   commitFiles(repo: string, input: CommitFilesInput): Promise<Commit>;
+  /**
+   * Merge a pull request.
+   *
+   * The only method on this interface that changes what will run in production, and
+   * the only one gated behind a recorded human approval at L4. It is deliberately
+   * separate from `commitFiles` so that "writes to a fix branch" and "changes the
+   * default branch" can never be confused for one another at a call site.
+   */
+  mergePullRequest(
+    repo: string,
+    number: number,
+    opts?: { method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string },
+  ): Promise<PullRequest>;
   /** Clone URL for the reproduction sandbox. May embed a twin credential. */
   cloneUrl(repo: string): string;
 }

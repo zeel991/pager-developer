@@ -29,6 +29,16 @@ export interface WorkerConfig {
    * deployment can be observed before it is trusted to write.
    */
   readOnly: boolean;
+  /**
+   * Offer a merge button in Slack, and accept the interaction that backs it.
+   *
+   * Opt-in and off by default. Merging is the one action that changes production,
+   * and a deployment should have to say out loud that it wants that button to exist.
+   * Without a signing secret it stays off whatever this says: an endpoint that
+   * merges pull requests without verifying who asked is not a feature.
+   */
+  mergeButton: boolean;
+  slackSigningSecret: string;
 }
 
 export class WorkerConfigError extends Error {
@@ -69,7 +79,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     intervalSeconds: Number(env.PAGER_INTERVAL_SECONDS ?? 60),
     once: env.PAGER_WORKER_ONCE === '1',
     readOnly: env.PAGER_READ_ONLY === '1',
+    mergeButton: env.PAGER_ENABLE_MERGE_BUTTON === '1' && Boolean(env.SLACK_SIGNING_SECRET?.trim()),
+    slackSigningSecret: env.SLACK_SIGNING_SECRET?.trim() ?? '',
   };
+
+  // Say so rather than failing silently: asking for the button without the secret
+  // is a configuration mistake that would otherwise look like the button "not
+  // working" when in fact it was deliberately withheld.
+  if (env.PAGER_ENABLE_MERGE_BUTTON === '1' && !env.SLACK_SIGNING_SECRET?.trim()) {
+    missing.push('SLACK_SIGNING_SECRET (required by PAGER_ENABLE_MERGE_BUTTON)');
+  }
 
   if (missing.length > 0) throw new WorkerConfigError(missing);
   return config;
@@ -86,5 +105,6 @@ export function describeConfig(config: WorkerConfig): string {
     `model          ${config.model}`,
     `interval       ${config.intervalSeconds}s`,
     `mode           ${config.readOnly ? 'READ ONLY — will not open pull requests' : 'may open pull requests for human review'}`,
+    `merge button   ${config.mergeButton ? 'OFFERED — a human click merges, recorded against them' : 'off — merging happens on GitHub'}`,
   ].join('\n  ');
 }

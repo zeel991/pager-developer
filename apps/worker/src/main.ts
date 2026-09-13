@@ -20,6 +20,7 @@ import {
   DatadogProvider,
   GitHubProvider,
   SlackProvider,
+  type SourceControlProvider,
 } from '@pager/providers';
 import { AgentTracer, InMemorySink, lemmaFromEnv } from '@pager/observability';
 import {
@@ -27,10 +28,12 @@ import {
   IncidentInvestigator,
   IncidentWorkflow,
   ModelPatchGenerator,
+  mergeButtonBlocks,
   toRepositoryPath,
 } from '@pager/agents';
 import { loadConfig, describeConfig, type WorkerConfig } from './config.ts';
 import { renderDashboard } from './dashboard.ts';
+import { handleSlackInteraction, type MergeApproval } from './merge-endpoint.ts';
 import { deploymentFromRevision, probeDeployedRevision } from './deployed-revision.ts';
 
 const log = (message: string): void => {
@@ -93,12 +96,15 @@ interface WorkerStatus {
   incidents: IncidentRecord[];
   /** Revisions already acted on, so a red monitor produces one PR and not sixty. */
   handledRevisions: string[];
+  /** Merges a person authorised from Slack. The agent decided none of them. */
+  approvals: MergeApproval[];
   config: {
     service: string;
     repository: string;
     model: string;
     intervalSeconds: number;
     readOnly: boolean;
+    mergeButton: boolean;
   } | null;
 }
 
@@ -111,12 +117,27 @@ const status: WorkerStatus = {
   busySince: null,
   incidents: [],
   handledRevisions: [],
+  approvals: [],
   config: null,
 };
 
-function serveStatus(port: number): void {
+function serveStatus(port: number, config: WorkerConfig, sourceControl: SourceControlProvider): void {
   createServer((request, response) => {
     const path = new URL(request.url ?? '/', 'http://localhost').pathname;
+
+    // The one endpoint that can change production. Everything it needs to refuse a
+    // request it does not trust lives inside the handler.
+    if (request.method === 'POST' && path === '/slack/interactions') {
+      void handleSlackInteraction(request, response, {
+        signingSecret: config.slackSigningSecret,
+        enabled: config.mergeButton,
+        repository: config.repository,
+        sourceControl,
+        approvals: status.approvals,
+        log,
+      });
+      return;
+    }
     if (path === '/health') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ status: 'ok', service: 'pager-developer-worker' }));
@@ -290,6 +311,37 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   });
   status.lastOutcome = result.pullRequest ? `opened ${result.pullRequest.url}` : result.stage;
 
+  // Offer the merge to a person, in the channel where they are already reading about
+  // the incident. The button carries one pull request in one repository; it is not a
+  // standing grant, and the agent still decides nothing by posting it.
+  if (config.mergeButton && result.pullRequest) {
+    const pr = result.pullRequest;
+    await messaging
+      .openThread(
+        config.slackChannel,
+        `${incidentKey}: #${pr.number} is ready for review.`,
+        mergeButtonBlocks({
+          headline: `${incidentKey} — fix ready for review`,
+          summary: [
+            `*Root cause* ${result.patch?.rootCause ?? 'see the pull request'}`,
+            `*Reproduced* \`${result.reproduction?.command ?? ''}\` exited ` +
+              `${result.reproduction?.beforeFix.exitCode} before the patch and ` +
+              `${result.reproduction?.afterFix?.exitCode ?? 'n/a'} after it`,
+            `*Checks* ${result.validation.filter((v) => !v.skipped).map((v) => `${v.kind}=${v.passed ? 'pass' : 'FAIL'}`).join(', ') || 'none ran'}` +
+              (result.validation.some((v) => v.skipped)
+                ? ` · not run: ${result.validation.filter((v) => v.skipped).map((v) => v.kind).join(', ')}`
+                : ''),
+            `*Patch authored by* ${result.patch?.kind === 'model' ? `model \`${result.investigation?.model ?? config.model}\`` : (result.patch?.kind ?? 'unknown')}`,
+          ].join('\n'),
+          pullRequestUrl: pr.url,
+          action: { repository: config.repository, pullRequest: pr.number, incidentKey },
+        }),
+      )
+      .catch((err: unknown) => {
+        log(`could not post the merge button: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }
+
   const usage = result.investigation;
   log(
     `INCIDENT at ${deployment.commitSha.slice(0, 12)}: ${result.stage}` +
@@ -315,6 +367,7 @@ async function main(): Promise<void> {
     model: config.model,
     intervalSeconds: config.intervalSeconds,
     readOnly: config.readOnly,
+    mergeButton: config.mergeButton,
   };
 
   const handled = new Set<string>();
@@ -326,7 +379,11 @@ async function main(): Promise<void> {
 
   // Bound before the first tick, so the host sees a live service immediately rather
   // than waiting out an investigation that can take minutes.
-  serveStatus(Number(process.env.PORT ?? 10000));
+  serveStatus(
+    Number(process.env.PORT ?? 10000),
+    config,
+    new GitHubProvider({ baseUrl: 'https://api.github.com', token: config.githubToken }),
+  );
 
   // A failing tick must never kill the watcher: an unreachable Datadog for one
   // minute is not a reason to stop watching production for the rest of the day.

@@ -381,6 +381,27 @@ export function githubRoutes(): Route[] {
 
     // ── Writes ───────────────────────────────────────────────────────────────
     {
+      method: 'PUT',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
+        const pr = repo?.pullRequests.find((p) => p.number === Number(ctx.params[2]));
+        if (!repo || !pr) return { status: 404, body: { message: 'Not Found' } };
+        // GitHub answers 405 for a pull request that cannot be merged. A twin that
+        // always succeeds would let a caller look correct while never exercising the
+        // path real GitHub takes most often when something is wrong.
+        if (pr.merged || pr.state === 'closed') {
+          return { status: 405, body: { message: 'Pull Request is not mergeable' } };
+        }
+        pr.merged = true;
+        pr.state = 'closed';
+        pr.mergeCommitSha = pr.headSha;
+        repo.branches.set(pr.baseRef, pr.headSha);
+        return { status: 200, body: { merged: true, sha: pr.headSha, message: 'Pull Request successfully merged' } };
+      },
+    },
+    {
       method: 'POST',
       pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/refs$/,
       handler: (ctx) => {

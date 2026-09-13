@@ -46,12 +46,22 @@ interface Renderable {
     failedToolCalls: number;
   }[];
   handledRevisions: string[];
+  approvals: {
+    id: string;
+    repository: string;
+    pullRequest: number;
+    incidentKey: string;
+    approvedBy: string;
+    decidedAt: string;
+    outcome: string;
+  }[];
   config: {
     service: string;
     repository: string;
     model: string;
     intervalSeconds: number;
     readOnly: boolean;
+    mergeButton: boolean;
   } | null;
 }
 
@@ -194,6 +204,7 @@ export function renderDashboard(s: Renderable): string {
     <div><div class="k">model</div><div class="v">${esc(cfg?.model ?? '—')}</div></div>
     <div><div class="k">checks every</div><div class="v">${esc(cfg?.intervalSeconds ?? '—')}s</div></div>
     <div><div class="k">autonomy</div><div class="v">${cfg?.readOnly ? 'L2 — may not open PRs' : 'L3 — may open PRs'}</div></div>
+    <div><div class="k">merge button</div><div class="v">${cfg?.mergeButton ? 'offered in Slack' : 'off'}</div></div>
   </div>
 
   <div class="bar">
@@ -203,6 +214,22 @@ export function renderDashboard(s: Renderable): string {
     <div><div class="k">incidents handled</div><div class="v">${s.incidents.length}</div></div>
     <div style="flex:1 1 260px"><div class="k">last outcome</div><div class="v">${esc(s.lastOutcome ?? (s.busy ? 'first check in progress' : 'no check has completed yet'))}</div></div>
   </div>
+
+  ${s.approvals.length > 0 ? `
+  <div class="panel">
+    <div class="phead"><strong>Human decisions</strong>
+      <span class="k" style="margin-left:auto">${s.approvals.length} recorded</span></div>
+    <div class="pbody">
+      ${s.approvals.map((a) => `<div style="margin-bottom:6px">
+        <span class="${a.outcome === 'merged' ? 'pass' : a.outcome.startsWith('approved') ? 'v' : 'fail'}">${esc(a.outcome)}</span>
+        <span class="v">#${a.pullRequest}</span>
+        <span class="k">authorised by</span> <span class="v">${esc(a.approvedBy)}</span>
+        <span class="k">· ${esc(ago(a.decidedAt))} · approval ${esc(a.id.slice(0, 8))}</span>
+      </div>`).join('')}
+      <div class="note">Every merge here was decided by a person and recorded against them.
+        Pager Developer cannot merge on its own at any autonomy level.</div>
+    </div>
+  </div>` : ''}
 
   ${incidents}
 

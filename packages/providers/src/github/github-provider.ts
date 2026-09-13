@@ -286,6 +286,31 @@ export class GitHubProvider implements SourceControlProvider {
     return { name: res.ref.replace(/^refs\/heads\//, ''), sha: res.object.sha };
   }
 
+  /**
+   * Merge a pull request.
+   *
+   * GitHub answers 405 when the pull request is not mergeable — conflicts, a failing
+   * required check, a branch protection rule. That is surfaced rather than retried:
+   * a merge that the repository's own rules refuse is a decision, not a transient
+   * failure, and working around it would defeat the point of having the rules.
+   */
+  async mergePullRequest(
+    repo: string,
+    number: number,
+    opts: { method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string } = {},
+  ): Promise<PullRequest> {
+    await this.http.put<{ merged: boolean; sha?: string; message?: string }>(
+      `/repos/${repo}/pulls/${number}/merge`,
+      {
+        merge_method: opts.method ?? 'squash',
+        ...(opts.commitTitle ? { commit_title: opts.commitTitle } : {}),
+      },
+    );
+    // Read the pull request back rather than trusting the merge response: the
+    // authoritative record of what happened is the pull request's own state.
+    return this.getPullRequest(repo, number);
+  }
+
   async getBranch(repo: string, name: string): Promise<Branch | null> {
     const res = await this.http.getOptional<{ ref: string; object: { sha: string } }>(
       `/repos/${repo}/git/ref/heads/${name}`,
