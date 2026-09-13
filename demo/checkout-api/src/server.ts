@@ -77,7 +77,12 @@ const server = createServer(async (request, response) => {
       timestamp: new Date().toISOString(),
       service: 'checkout-api',
       env: process.env.DD_ENV ?? 'hackathon',
-      status: status >= 500 ? 'error' : 'info',
+      // An access log, not an error, whatever the HTTP status was. The failure is
+      // logged separately by the catch block above, with a message and a stack.
+      // Emitting this line at error level too produced a second cluster — larger,
+      // because every request makes one, and carrying neither message nor stack —
+      // which then outranked the real failure in the incident brief.
+      status: 'info',
       http_status: status,
       route: path,
       method: request.method,

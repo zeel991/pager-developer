@@ -148,6 +148,13 @@ export function clusterErrors(logs: readonly LogEntry[]): ErrorCluster[] {
 
   for (const log of logs) {
     if (log.level !== 'error' && log.level !== 'fatal') continue;
+    // An error-level entry carrying neither a message nor a stack describes no
+    // failure. Observed on a real service whose access log was mislabelled: those
+    // lines are emitted once per request, so they outnumbered the genuine errors
+    // and became the top cluster — reporting "Error ×80, no application frame" for
+    // an incident that had a clear TypeError and a located frame. Clustering must
+    // not depend on every producer labelling its logs correctly.
+    if (log.message.trim() === '' && !log.stackTrace) continue;
 
     const signature = errorSignature(log.message);
     const existing = clusters.get(signature);

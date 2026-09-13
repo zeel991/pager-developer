@@ -246,3 +246,55 @@ describe('clustering real structured logs', () => {
     expect(frame.line).toBe(22);
   });
 });
+
+/**
+ * Information-free error entries.
+ *
+ * A real service mislabelled its per-request access log as error level. Those lines
+ * carry no message and no stack, there is one per request, and so they outnumbered
+ * the genuine failures and became the top cluster — the incident brief reported
+ * "Error ×80, no application frame" for an incident that had a clear TypeError at a
+ * known line. Clustering cannot depend on every log producer labelling correctly.
+ */
+describe('clustering ignores entries that describe no failure', () => {
+  const accessLog = (): LogEntry => ({
+    at: new Date('2026-09-14T00:20:00Z'),
+    service: 'checkout-api',
+    level: 'error',
+    message: '',
+    stackTrace: null,
+    attributes: { route: '/orders', http_status: 500, duration_ms: 4 },
+  });
+
+  const realError = (): LogEntry => ({
+    at: new Date('2026-09-14T00:20:01Z'),
+    service: 'checkout-api',
+    level: 'error',
+    message: "Cannot read properties of undefined (reading 'percentOff')",
+    stackTrace:
+      "TypeError: Cannot read properties of undefined (reading 'percentOff')\n" +
+      '    at CheckoutService.createOrder (file:///opt/render/project/src/src/checkout/service.ts:22:60)',
+    attributes: { error: 'TypeError', route: '/orders' },
+  });
+
+  it('does not let message-less, stack-less entries become a cluster', () => {
+    const clusters = clusterErrors([...Array(40)].map(accessLog));
+    expect(clusters).toHaveLength(0);
+  });
+
+  it('surfaces the real failure even when swamped by them', () => {
+    // The exact shape observed: 40 information-free entries against 3 real ones.
+    const logs = [...[...Array(40)].map(accessLog), realError(), realError(), realError()];
+    const clusters = clusterErrors(logs);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]!.errorType).toBe('TypeError');
+    expect(clusters[0]!.count).toBe(3);
+    expect(toRepositoryPath(clusters[0]!.topApplicationFrame!.file)).toBe('src/checkout/service.ts');
+  });
+
+  it('still keeps an error that has a message but no stack', () => {
+    // Absence of a stack is not absence of information.
+    const log = { ...accessLog(), message: 'Upstream refused the connection' };
+    expect(clusterErrors([log])).toHaveLength(1);
+  });
+});
