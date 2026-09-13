@@ -1,8 +1,19 @@
 import type { ScenarioFixture } from '../seed.js';
 import { INC_001 } from './inc-001.js';
+import { INC_009 } from './inc-009.js';
+import { INC_011 } from './inc-011.js';
 
+/**
+ * Local scenario fixtures.
+ *
+ * Two of the three have an innocent deployment. That ratio is deliberate: a system
+ * evaluated only on scenarios where the deploy is guilty will learn to blame the
+ * newest deploy and score well doing it.
+ */
 export const FIXTURES: Record<string, ScenarioFixture> = {
   'INC-001': INC_001,
+  'INC-009': INC_009,
+  'INC-011': INC_011,
 };
 
 export function fixture(id: string): ScenarioFixture {
@@ -13,4 +24,4 @@ export function fixture(id: string): ScenarioFixture {
   return found;
 }
 
-export { INC_001 };
+export { INC_001, INC_009, INC_011 };
