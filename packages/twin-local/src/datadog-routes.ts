@@ -100,7 +100,13 @@ export function datadogRoutes(): Route[] {
       method: 'GET',
       pattern: /^\/api\/v1\/monitor$/,
       handler: (ctx) => {
-        const tag = ctx.query.tags ?? '';
+        // Real Datadog exposes two distinct tag filters here and they mean
+        // different things: `monitor_tags` matches tags applied TO the monitor,
+        // `tags` matches the scope tags derived from its query. A twin that
+        // ignores `monitor_tags` and returns everything is worse than one that
+        // returns nothing — it makes a caller look correct here and fail against
+        // the real API. Both are honoured, and an unmatched filter returns none.
+        const tag = ctx.query.monitor_tags ?? ctx.query.tags ?? '';
         const service = tag.replace(/^service:/, '');
         return {
           status: 200,
