@@ -244,6 +244,11 @@ export function resolveDeployedRevision(input: WorkflowInput): DeployedRevision 
   return null;
 }
 
+/** The readable half of an unknown thrown value. */
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export interface WorkflowResult {
   stage: WorkflowStage;
   steps: WorkflowStep[];
@@ -272,6 +277,15 @@ export interface WorkflowResult {
   repairAttempted: boolean;
   /** What the post-merge evidence supported. Null before recovery is checked. */
   recoveryVerdict: 'RECOVERED' | 'NOT_RECOVERED' | 'UNVERIFIABLE' | null;
+  /**
+   * The Slack thread this incident is being narrated in.
+   *
+   * First-class rather than something a caller digs out of `steps`, because the
+   * post-merge write-up is posted back into it, and a caller that fails to find it
+   * degrades silently: the summary lands as a new top-level message in a busy
+   * channel, detached from the incident it concludes.
+   */
+  slackThreadTs: string | null;
 }
 
 export class IncidentWorkflow {
@@ -303,6 +317,7 @@ export class IncidentWorkflow {
       preexistingChecks: null,
       repairAttempted: false,
       recoveryVerdict: null,
+      slackThreadTs: null,
     };
 
     const step = (stage: WorkflowStage, summary: string, detail?: Record<string, unknown>): void => {
@@ -566,6 +581,7 @@ export class IncidentWorkflow {
       ),
     );
     step('team_notified', `Posted to ${input.slackChannel}`, { threadTs: thread.id });
+    result.slackThreadTs = thread.id;
 
     // ── 4b. Abstention is a complete outcome, not a failure ──────────────────
     if (findings && findings.decision.action === 'ABSTAIN') {
@@ -940,6 +956,7 @@ export class IncidentWorkflow {
       preexistingChecks: null,
       repairAttempted: false,
       recoveryVerdict: null,
+      slackThreadTs: null,
     };
     const step = (stage: WorkflowStage, summary: string): void => {
       result.stage = stage;
@@ -1032,14 +1049,21 @@ export class IncidentWorkflow {
     const writeUp = this.writeUp(input.incidentKey, input.alert, input.rootCause, pr, recovery);
     result.recoveryVerdict = recovery.verdict;
     if (this.deps.knowledge) {
-      const doc = await trace('CommunicationAgent', async (ctx) => {
-        const { value } = await ctx.tool('notion.createDocument', { title: writeUp.title }, () =>
-          this.deps.knowledge!.createDocument({ title: writeUp.title, content: writeUp.body }),
-        );
-        return value;
-      });
-      result.writeUpUrl = doc.url;
-      step('written_up', `Wrote ${writeUp.title} to Notion.`);
+      // Each handoff degrades on its own. An unreachable Notion used to throw out
+      // of here, which took the email and the Slack close down with it — the whole
+      // conclusion of the incident lost to one workspace being unreachable.
+      try {
+        const doc = await trace('CommunicationAgent', async (ctx) => {
+          const { value } = await ctx.tool('notion.createDocument', { title: writeUp.title }, () =>
+            this.deps.knowledge!.createDocument({ title: writeUp.title, content: writeUp.body }),
+          );
+          return value;
+        });
+        result.writeUpUrl = doc.url;
+        step('written_up', `Wrote ${writeUp.title} to Notion.`);
+      } catch (err) {
+        step('written_up', `Could not write up to Notion: ${message(err)}. The body is in this record.`);
+      }
     } else {
       step('written_up', 'No knowledge provider configured; skipped the write-up.');
     }
@@ -1047,17 +1071,28 @@ export class IncidentWorkflow {
     // ── 9. Mail the team ─────────────────────────────────────────────────────
     const recipients = input.teamEmails ?? [];
     if (this.deps.email && recipients.length > 0) {
-      await trace('CommunicationAgent', async (ctx) => {
-        await ctx.tool('email.send', { to: recipients }, () =>
-          this.deps.email!.send({
-            to: recipients,
-            subject: `${input.incidentKey} resolved — ${input.service}`,
-            text: `${writeUp.body}\n\n${result.writeUpUrl ? `Full write-up: ${result.writeUpUrl}` : ''}`.trim(),
-          }),
-        );
-      });
-      result.emailed = recipients;
-      step('mailed', `Emailed ${recipients.length} recipient(s).`);
+      // The subject line is the part most recipients will ever read, so it may not
+      // claim more than the evidence does. "resolved" is reserved for a measured
+      // recovery; anything else says so in the subject itself.
+      const subject =
+        recovery.verdict === 'RECOVERED'
+          ? `${input.incidentKey} resolved — ${input.service}`
+          : `${input.incidentKey} fix merged, recovery unverified — ${input.service}`;
+      try {
+        await trace('CommunicationAgent', async (ctx) => {
+          await ctx.tool('email.send', { to: recipients }, () =>
+            this.deps.email!.send({
+              to: recipients,
+              subject,
+              text: `${writeUp.body}\n\n${result.writeUpUrl ? `Full write-up: ${result.writeUpUrl}` : ''}`.trim(),
+            }),
+          );
+        });
+        result.emailed = recipients;
+        step('mailed', `Emailed ${recipients.length} recipient(s).`);
+      } catch (err) {
+        step('mailed', `Could not email the team: ${message(err)}.`);
+      }
     } else {
       step('mailed', 'No email provider or recipients configured; skipped.');
     }
@@ -1069,7 +1104,10 @@ export class IncidentWorkflow {
         comms.reply(
           ctx,
           input.slackThread,
-          `:large_green_circle: *${input.incidentKey} resolved* — #${pr.number} merged and signals are back to baseline.` +
+          (recovery.verdict === 'RECOVERED'
+            ? `:large_green_circle: *${input.incidentKey} resolved* — #${pr.number} merged and signals are back to baseline.`
+            : `:white_circle: *${input.incidentKey} fix merged* — #${pr.number} is in. ${recovery.summary} ` +
+              `Leaving the incident open for a human to close.`) +
             (result.writeUpUrl ? `\n\nWrite-up: ${result.writeUpUrl}` : ''),
         ),
       )
@@ -1697,11 +1735,15 @@ export class IncidentWorkflow {
       `## Root cause`,
       rootCause,
       `## How it was found`,
-      `The failure did not match any documented mode in the service runbooks. ` +
+      // The watcher's own rationale, not a restatement of it. Escalation has more
+      // than one cause — a novel signature is one, unreadable runbooks is another —
+      // and asserting the first when the second happened is a small fabrication
+      // that survives into the permanent record.
+      `${alert.rationale} ` +
         `The stack trace located it at ` +
         `${c.topApplicationFrame ? `${toRepositoryPath(c.topApplicationFrame.file)}:${c.topApplicationFrame.line}` : 'no application frame'}.`,
       `## Fix`,
-      `Pull request #${pr.number} — ${pr.title}. Reviewed and merged by a human.`,
+      `Pull request [#${pr.number}](${pr.url}) — ${pr.title}. Reviewed and merged by a human.`,
       `## Recovery`,
       `**${recovery.verdict.replace('_', ' ')}** — ${recovery.summary}`,
       recovery.comparisons.length > 0
@@ -1720,7 +1762,10 @@ export class IncidentWorkflow {
       `Pager Developer did not make any production change. The only production-affecting ` +
         `action was the human merge of #${pr.number}.`,
     ];
-    return { title: `${incidentKey} — ${alert.service} incident write-up`, body: lines.join('\n\n') };
+    return {
+      title: `${incidentKey} — ${alert.service} incident write-up`,
+      body: lines.filter((l) => l.trim() !== '').join('\n\n'),
+    };
   }
 }
 

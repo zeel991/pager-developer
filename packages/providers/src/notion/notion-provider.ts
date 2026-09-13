@@ -105,26 +105,52 @@ export function toBlocks(content: string): unknown[] {
   for (const paragraph of content.split(/\n{2,}/)) {
     const trimmed = paragraph.trim();
     if (!trimmed) continue;
-    for (let i = 0; i < trimmed.length; i += MAX_BLOCK_TEXT) {
-      const chunk = trimmed.slice(i, i + MAX_BLOCK_TEXT);
-      const heading = /^(#{1,3})\s+(.*)$/.exec(chunk);
-      if (heading && i === 0) {
-        const level = heading[1]!.length;
-        blocks.push({
-          object: 'block',
-          type: `heading_${level}`,
-          [`heading_${level}`]: { rich_text: [{ type: 'text', text: { content: heading[2] } }] },
-        });
-      } else {
-        blocks.push({
-          object: 'block',
-          type: 'paragraph',
-          paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] },
-        });
+
+    // A run of "- " lines is a list, not a paragraph that happens to contain
+    // newlines. Notion has a block type for this; collapsing it into one
+    // paragraph renders the whole thing as a single grey slab and loses the
+    // per-item structure that made it a list in the source.
+    const lines = trimmed.split('\n');
+    if (lines.every((l) => /^[-*]\s+/.test(l.trim()))) {
+      for (const line of lines) {
+        blocks.push(
+          ...chunked(line.trim().replace(/^[-*]\s+/, ''), (chunk) => ({
+            object: 'block',
+            type: 'bulleted_list_item',
+            bulleted_list_item: { rich_text: [{ type: 'text', text: { content: chunk } }] },
+          })),
+        );
       }
+      continue;
     }
+
+    const heading = /^(#{1,3})\s+(.*)$/.exec(trimmed);
+    if (heading) {
+      const level = heading[1]!.length;
+      blocks.push({
+        object: 'block',
+        type: `heading_${level}`,
+        [`heading_${level}`]: { rich_text: [{ type: 'text', text: { content: heading[2]!.slice(0, MAX_BLOCK_TEXT) } }] },
+      });
+      continue;
+    }
+
+    blocks.push(
+      ...chunked(trimmed, (chunk) => ({
+        object: 'block',
+        type: 'paragraph',
+        paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] },
+      })),
+    );
   }
   return blocks;
+}
+
+/** Split text that exceeds Notion's per-block limit across several blocks. */
+function chunked(text: string, make: (chunk: string) => unknown): unknown[] {
+  const out: unknown[] = [];
+  for (let i = 0; i < text.length; i += MAX_BLOCK_TEXT) out.push(make(text.slice(i, i + MAX_BLOCK_TEXT)));
+  return out;
 }
 
 export interface NotionProviderOptions {

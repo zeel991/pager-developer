@@ -48,6 +48,10 @@ interface Renderable {
     failedToolCalls: number;
   }[];
   handledRevisions: string[];
+  /** Pull requests raised and not yet acted on; the aftermath waits on these. */
+  awaitingMerge: { pullRequest: number; incidentKey: string; url: string; since: string }[];
+  /** What was filed after a merge, and what the evidence supported. */
+  writeUps: { incidentKey: string; at: string; recovery: string; notionUrl: string | null; emailed: number }[];
   approvals: {
     id: string;
     repository: string;
@@ -129,9 +133,10 @@ export function renderDashboard(s: Renderable): string {
     patching: 'Writing the patch',
     validating: 'Running the repository’s own checks',
     opening_pull_request: 'Opening a pull request',
+    writing_up: 'Verifying recovery and filing the postmortem',
     done: 'Handed off to a human',
   };
-  const ORDER = ['reading_deployed_revision','checking_monitors','investigating','reproducing','patching','validating','opening_pull_request','done'];
+  const ORDER = ['reading_deployed_revision','checking_monitors','investigating','reproducing','patching','validating','opening_pull_request','writing_up','done'];
 
   const state = s.busy
     ? `<span class="pill busy">${esc(LABELS[s.stage] ?? s.stage).toUpperCase()}</span>`
@@ -268,6 +273,37 @@ export function renderDashboard(s: Renderable): string {
       </div>`).join('')}
       <div class="note">Every merge here was decided by a person and recorded against them.
         Pager Developer cannot merge on its own at any autonomy level.</div>
+    </div>
+  </div>` : ''}
+
+  ${s.awaitingMerge.length > 0 ? `
+  <div class="panel">
+    <div class="phead"><strong>Awaiting a human merge</strong>
+      <span class="k" style="margin-left:auto">${s.awaitingMerge.length} open</span></div>
+    <div class="pbody">
+      ${s.awaitingMerge.map((a) => `<div style="margin-bottom:6px">
+        <a href="${esc(a.url)}" class="v">#${a.pullRequest}</a>
+        <span class="k">${esc(a.incidentKey)} · raised ${esc(ago(a.since))}</span>
+      </div>`).join('')}
+      <div class="note">The postmortem and the team email are written after the merge,
+        so that what they report about recovery is measured rather than predicted.</div>
+    </div>
+  </div>` : ''}
+
+  ${s.writeUps.length > 0 ? `
+  <div class="panel">
+    <div class="phead"><strong>Aftermath</strong>
+      <span class="k" style="margin-left:auto">${s.writeUps.length} filed</span></div>
+    <div class="pbody">
+      ${s.writeUps.map((w) => `<div style="margin-bottom:6px">
+        <span class="${w.recovery === 'RECOVERED' ? 'pass' : w.recovery === 'NOT_RECOVERED' ? 'fail' : 'v'}">${esc(w.recovery.replace('_', ' '))}</span>
+        <span class="v">${esc(w.incidentKey)}</span>
+        ${w.notionUrl ? `<a href="${esc(w.notionUrl)}" class="k">postmortem</a>` : '<span class="k">no postmortem filed</span>'}
+        <span class="k">· ${w.emailed} emailed · ${esc(ago(w.at))}</span>
+      </div>`).join('')}
+      <div class="note">RECOVERED means the metrics either side of the merge were compared and
+        came back. UNVERIFIABLE means nothing could be measured — reported as such rather than
+        as success, and the incident stays open for a person to close.</div>
     </div>
   </div>` : ''}
 

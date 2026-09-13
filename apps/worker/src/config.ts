@@ -50,6 +50,13 @@ export interface WorkerConfig {
    * the button is configured.
    */
   autonomy: AutonomyLevel;
+  /**
+   * Where the postmortem is written, and who is told. Both optional: an incident
+   * is handled correctly without either, and a missing integration must degrade
+   * rather than block the repair.
+   */
+  notion: { token: string; parentPageId: string } | null;
+  email: { apiKey: string; from: string; to: string[] } | null;
 }
 
 export class WorkerConfigError extends Error {
@@ -93,7 +100,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     mergeButton: env.PAGER_ENABLE_MERGE_BUTTON === '1' && Boolean(env.SLACK_SIGNING_SECRET?.trim()),
     slackSigningSecret: env.SLACK_SIGNING_SECRET?.trim() ?? '',
     autonomy: (env.PAGER_AUTONOMY_LEVEL?.trim() || 'L3') as AutonomyLevel,
+    notion:
+      env.NOTION_TOKEN?.trim() && env.NOTION_PARENT_PAGE_ID?.trim()
+        ? { token: env.NOTION_TOKEN.trim(), parentPageId: env.NOTION_PARENT_PAGE_ID.trim() }
+        : null,
+    email:
+      env.RESEND_API_KEY?.trim() && env.PAGER_EMAIL_FROM?.trim() && env.PAGER_TEAM_EMAILS?.trim()
+        ? {
+            apiKey: env.RESEND_API_KEY.trim(),
+            from: env.PAGER_EMAIL_FROM.trim(),
+            to: env.PAGER_TEAM_EMAILS.split(',').map((e) => e.trim()).filter(Boolean),
+          }
+        : null,
   };
+
+  // Half a configuration is worse than none: it looks configured and silently
+  // does nothing. Say which half is missing.
+  if (env.NOTION_TOKEN?.trim() && !env.NOTION_PARENT_PAGE_ID?.trim()) {
+    missing.push('NOTION_PARENT_PAGE_ID (NOTION_TOKEN is set without it)');
+  }
+  if (env.RESEND_API_KEY?.trim() && !env.PAGER_EMAIL_FROM?.trim()) {
+    missing.push('PAGER_EMAIL_FROM (RESEND_API_KEY is set without it)');
+  }
 
   if (!(AUTONOMY_LEVELS as readonly string[]).includes(config.autonomy)) {
     missing.push(`PAGER_AUTONOMY_LEVEL (got "${config.autonomy}", expected one of ${AUTONOMY_LEVELS.join(', ')})`);
@@ -122,6 +150,8 @@ export function describeConfig(config: WorkerConfig): string {
     `interval       ${config.intervalSeconds}s`,
     `mode           ${config.readOnly ? 'READ ONLY — will not open pull requests' : 'may open pull requests for human review'}`,
     `autonomy       ${config.autonomy}`,
+    `postmortem     ${config.notion ? `Notion page ${config.notion.parentPageId.slice(0, 8)}…` : 'off — no write-up will be filed'}`,
+    `email          ${config.email ? `${config.email.to.length} recipient(s) via Resend` : 'off — nobody is mailed'}`,
     `merge button   ${
       !config.mergeButton
         ? 'off — merging happens on GitHub'

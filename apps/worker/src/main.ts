@@ -19,8 +19,11 @@ import { createServer } from 'node:http';
 import {
   DatadogProvider,
   GitHubProvider,
+  NotionProvider,
+  ResendProvider,
   SlackProvider,
   type SourceControlProvider,
+  type TimeRange,
 } from '@pager/providers';
 import { AgentTracer, InMemorySink, lemmaFromEnv } from '@pager/observability';
 import {
@@ -29,7 +32,9 @@ import {
   IncidentWorkflow,
   ModelPatchGenerator,
   mergeButtonBlocks,
+  telemetryWindowsFor,
   toRepositoryPath,
+  type ProductionAlert,
 } from '@pager/agents';
 import { loadConfig, describeConfig, type WorkerConfig } from './config.ts';
 import { renderDashboard } from './dashboard.ts';
@@ -109,6 +114,7 @@ export type Stage =
   | 'patching'
   | 'validating'
   | 'opening_pull_request'
+  | 'writing_up'
   | 'done';
 
 export const STAGE_LABELS: Record<Stage, string> = {
@@ -120,6 +126,7 @@ export const STAGE_LABELS: Record<Stage, string> = {
   patching: 'Writing the patch',
   validating: 'Running the repository’s own checks',
   opening_pull_request: 'Opening a pull request for review',
+  writing_up: 'Verifying recovery and filing the postmortem',
   done: 'Handed off to a human',
 };
 
@@ -144,6 +151,10 @@ interface WorkerStatus {
   incidents: IncidentRecord[];
   /** Revisions already acted on, so a red monitor produces one PR and not sixty. */
   handledRevisions: string[];
+  /** Incidents whose pull request is open, waiting on a human to merge. */
+  awaitingMerge: { pullRequest: number; incidentKey: string; url: string; since: string }[];
+  /** Postmortems filed after a merge. */
+  writeUps: { incidentKey: string; at: string; recovery: string; notionUrl: string | null; emailed: number }[];
   /** Merges a person authorised from Slack. The agent decided none of them. */
   approvals: MergeApproval[];
   config: {
@@ -168,6 +179,8 @@ const status: WorkerStatus = {
   busySince: null,
   incidents: [],
   handledRevisions: [],
+  awaitingMerge: [],
+  writeUps: [],
   approvals: [],
   config: null,
 };
@@ -210,18 +223,105 @@ function serveStatus(port: number, config: WorkerConfig, sourceControl: SourceCo
   }).listen(port, '0.0.0.0', () => log(`status endpoint listening on ${port}`));
 }
 
+/**
+ * What an incident needs after its pull request is merged.
+ *
+ * Held in memory between ticks because the aftermath belongs to the same incident
+ * as the diagnosis, and the workflow cannot reconstruct the alert, the thread or
+ * the windows from a pull request number alone. A restart forgets these, so a
+ * merge that lands while the worker is down produces no write-up — stated on the
+ * dashboard rather than hidden.
+ */
+interface PendingMerge {
+  pullRequest: number;
+  incidentKey: string;
+  revision: string;
+  slackThread: { id: string; channel: string };
+  alert: ProductionAlert;
+  rootCause: string;
+  baselineWindow: TimeRange;
+  incidentWindow: TimeRange;
+  postRemediationWindow: TimeRange;
+  url: string;
+  since: Date;
+}
+
+const pending = new Map<number, PendingMerge>();
+
+/**
+ * Has a human merged anything we are waiting on?
+ *
+ * Checked before the monitor, every tick, because the write-up is owed whether or
+ * not production is currently alerting — and because an incident that was fixed
+ * and closed should stop being carried around.
+ */
+async function settleMerged(
+  config: WorkerConfig,
+  workflow: IncidentWorkflow,
+  sourceControl: SourceControlProvider,
+): Promise<void> {
+  for (const [number, ctxItem] of [...pending]) {
+    let state: string;
+    try {
+      state = (await sourceControl.getPullRequest(config.repository, number)).state;
+    } catch (err) {
+      log(`could not read #${number}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    if (state === 'open') continue;
+    if (state !== 'merged') {
+      // Closed without merging is a human deciding against the fix. Respect it.
+      log(`#${number} was closed without merging; dropping it`);
+      pending.delete(number);
+      status.awaitingMerge = [...pending.values()].map(toAwaiting);
+      continue;
+    }
+
+    enter('writing_up', `#${number} was merged — verifying recovery and filing the write-up`);
+    const after = await workflow.completeAfterMerge({
+      service: config.service,
+      repository: config.repository,
+      baseBranch: config.baseBranch,
+      slackChannel: config.slackChannel,
+      deployedRevision: ctxItem.revision,
+      pullRequestNumber: number,
+      incidentKey: ctxItem.incidentKey,
+      slackThread: ctxItem.slackThread,
+      alert: ctxItem.alert,
+      rootCause: ctxItem.rootCause,
+      baselineWindow: ctxItem.baselineWindow,
+      incidentWindow: ctxItem.incidentWindow,
+      postRemediationWindow: ctxItem.postRemediationWindow,
+      ...(config.email ? { teamEmails: config.email.to } : {}),
+    });
+
+    status.writeUps.unshift({
+      incidentKey: ctxItem.incidentKey,
+      at: new Date().toISOString(),
+      recovery: after.recoveryVerdict ?? 'unknown',
+      notionUrl: after.writeUpUrl,
+      emailed: after.emailed.length,
+    });
+    log(
+      `  #${number}: recovery ${after.recoveryVerdict ?? 'unknown'}` +
+        (after.writeUpUrl ? `, written up at ${after.writeUpUrl}` : ', no write-up filed') +
+        (after.emailed.length ? `, mailed ${after.emailed.length}` : ''),
+    );
+
+    pending.delete(number);
+    status.awaitingMerge = [...pending.values()].map(toAwaiting);
+  }
+}
+
+function toAwaiting(p: PendingMerge): WorkerStatus['awaitingMerge'][number] {
+  return { pullRequest: p.pullRequest, incidentKey: p.incidentKey, url: p.url, since: p.since.toISOString() };
+}
+
 async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   const startedTick = Date.now();
   status.stageLog = [];
   enter('reading_deployed_revision');
-  // 1. Ask the service what it is running. Everything downstream depends on this
-  //    being observed rather than assumed, so a failure here ends the tick.
-  const probe = await probeDeployedRevision(config.healthUrl);
-  if (!probe.sha) {
-    enter('idle', `Skipped: ${probe.problem}`);
-    return;
-  }
-  enter('checking_monitors', `Production is running ${probe.sha.slice(0, 12)}`);
 
   const sink = new InMemorySink();
   const tracer = new AgentTracer({ sink, lemma: lemmaFromEnv() });
@@ -237,6 +337,58 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   });
   const messaging = new SlackProvider({ baseUrl: 'https://slack.com', token: config.slackToken });
   const model = new AnthropicModel({ apiKey: config.anthropicKey, model: config.model });
+
+  // Both optional. A missing integration degrades the handoff; it never blocks the
+  // repair, and the workflow already treats absence as absence rather than failure.
+  const knowledge = config.notion
+    ? new NotionProvider({
+        baseUrl: 'https://api.notion.com',
+        token: config.notion.token,
+        parentPageId: config.notion.parentPageId,
+      })
+    : null;
+  const email = config.email
+    ? new ResendProvider({
+        baseUrl: 'https://api.resend.com',
+        apiKey: config.email.apiKey,
+        from: config.email.from,
+      })
+    : null;
+
+  const workflow = new IncidentWorkflow({
+    observability,
+    sourceControl,
+    messaging,
+    issueTracker: null,
+    knowledge,
+    email,
+    tracer,
+    patchGenerator: new ModelPatchGenerator({ model, tracer }),
+    investigator: new IncidentInvestigator({
+      model,
+      tracer,
+      providers: { observability, sourceControl, knowledge: null },
+    }),
+    // L2 prepares a fix in a sandbox but may not open a pull request; L3 may.
+    // Nothing here reaches production at either level.
+    autonomy: config.readOnly ? 'L2' : 'L3',
+  });
+
+  // Settle anything a human merged since the last tick. This runs before the health
+  // probe and before the incident logic, and not inside them, because every path
+  // below returns early: no alert, a revision already handled, a fix branch that
+  // already exists — and that last one is precisely the state an incident awaiting
+  // merge is in. The write-up is owed whether or not production is alerting now.
+  await settleMerged(config, workflow, sourceControl);
+
+  // 1. Ask the service what it is running. Everything downstream depends on this
+  //    being observed rather than assumed, so a failure here ends the tick.
+  const probe = await probeDeployedRevision(config.healthUrl);
+  if (!probe.sha) {
+    enter('idle', `Skipped: ${probe.problem}`);
+    return;
+  }
+  enter('checking_monitors', `Production is running ${probe.sha.slice(0, 12)}`);
 
   const deployment = await deploymentFromRevision(sourceControl, {
     repository: config.repository,
@@ -278,27 +430,7 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
     return;
   }
 
-  const workflow = new IncidentWorkflow({
-    observability,
-    sourceControl,
-    messaging,
-    issueTracker: null,
-    knowledge: null,
-    email: null,
-    tracer,
-    patchGenerator: new ModelPatchGenerator({ model, tracer }),
-    investigator: new IncidentInvestigator({
-      model,
-      tracer,
-      providers: { observability, sourceControl, knowledge: null },
-    }),
-    // L2 prepares a fix in a sandbox but may not open a pull request; L3 may.
-    // Nothing here reaches production at either level.
-    autonomy: config.readOnly ? 'L2' : 'L3',
-  });
 
-  // The workflow reports its own stages back as it moves through them, so the
-  // dashboard follows the run rather than guessing from elapsed time.
   const result = await workflow.run({
     onStage: (name: string, summary: string) => {
       const map: Record<string, Stage> = {
@@ -387,6 +519,28 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   // Offer the merge to a person, in the channel where they are already reading about
   // the incident. The button carries one pull request in one repository; it is not a
   // standing grant, and the agent still decides nothing by posting it.
+  // Only track it when there is a thread to narrate the conclusion back into; a
+  // write-up with nowhere to land is worse than a missing one, because it reads as
+  // an unrelated message in the channel.
+  if (result.pullRequest && result.alert && result.slackThreadTs) {
+    // Everything the aftermath needs that a pull request number cannot carry.
+    const windows = telemetryWindowsFor(result.alert.primary?.firstSeen ?? result.alert.firedAt);
+    pending.set(result.pullRequest.number, {
+      pullRequest: result.pullRequest.number,
+      incidentKey,
+      revision: deployment.commitSha,
+      slackThread: { id: result.slackThreadTs, channel: config.slackChannel },
+      alert: result.alert,
+      rootCause: result.patch?.rootCause ?? 'see the pull request',
+      baselineWindow: windows[0],
+      incidentWindow: { from: windows[1].from, to: new Date() },
+      postRemediationWindow: { from: new Date(), to: new Date(Date.now() + 15 * 60_000) },
+      url: result.pullRequest.url,
+      since: new Date(),
+    });
+    status.awaitingMerge = [...pending.values()].map(toAwaiting);
+  }
+
   if (config.mergeButton && result.pullRequest) {
     const pr = result.pullRequest;
     await messaging
