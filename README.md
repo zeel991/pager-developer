@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/demo.mp4"><b>Watch the 2-minute demo</b></a> ·
   <a href="https://pager-developer-worker.onrender.com"><b>Live dashboard</b></a> ·
   <a href="https://github.com/he11world/test/pull/12"><b>A pull request it opened</b></a> ·
   <a href="#the-loop-end-to-end">The loop</a>
@@ -19,6 +20,14 @@ the commit, reproduces the bug, writes the fix, writes the test, opens the PR, a
 writes the postmortem the next morning.
 
 Pager Developer does all of that, and stops exactly where a human should take over.
+
+<p align="center">
+  <a href="docs/demo.mp4">
+    <img src="docs/demo-poster.png" alt="Watch the demo" width="100%"/>
+  </a>
+  <br/>
+  <sub><b><a href="docs/demo.mp4">▶ Watch the 2-minute demo</a></b> — a real bug, found and fixed end to end</sub>
+</p>
 
 <p align="center">
   <img src="docs/architecture.svg" alt="Pager Developer architecture" width="100%"/>
