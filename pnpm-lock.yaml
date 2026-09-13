@@ -250,6 +250,21 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  apps/worker:
+    dependencies:
+      '@pager/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
+      '@pager/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@pager/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@pager/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+
   evals:
     dependencies:
       '@pager/agents':
