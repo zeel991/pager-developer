@@ -311,3 +311,29 @@ Schema tests run against a real engine and assert the constraints the safety mod
 depends on — in particular that `evidence.source_tool_call_id` is `NOT NULL` and
 foreign-keyed to `tool_calls`, so fabricated evidence is refused by the database and
 not only by application code.
+
+## 14. Arga constraints discovered in Phase 1
+
+Verified against the live API on 2026-09-13; see `CLAUDE.md` for the operational
+detail. The three that shape the design:
+
+1. **One twin per run, ten-minute TTL** (free plan). Scenarios provision per-twin
+   runs rather than one multi-twin environment. This is tolerable because the three
+   twins hold independent data and correlation happens inside Pager. The TTL is the
+   sharper constraint: a full incident lifecycle must fit inside it, which is why an
+   expired environment is a distinct error type rather than a retryable failure.
+
+2. **Twins issue no credentials in `envVars`.** Authentication is via the GitHub App
+   Manifest flow. Since that is also the correct production design, Pager
+   authenticates as a GitHub App everywhere, with scoped short-lived installation
+   tokens rather than a long-lived PAT.
+
+3. **The GitHub twin does not compute diffs.** This is a genuine fidelity limit, not
+   a bug in our adapter. `getDiff` degrades through compare → tree comparison and,
+   when all routes are empty, the DeploymentObserver records a gap. It never reports
+   an empty file list as though nothing changed, because an investigation would use
+   that to exonerate a deployment.
+
+Point 3 is the reason the local twin (`packages/twin-local`) is worth building rather
+than being a convenience: it gives the evaluation suite a source-control twin that
+can express a real file-level diff, which the hosted twin currently cannot.
