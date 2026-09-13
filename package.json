@@ -25,7 +25,8 @@
     "demo:pipeline": "pnpm --filter @pager/evals incident",
     "api": "pnpm --filter @pager/api start",
     "api:seed": "pnpm --filter @pager/api seed",
-    "demo:workflow": "pnpm --filter @pager/evals workflow"
+    "demo:workflow": "pnpm --filter @pager/evals workflow",
+    "demo:repo": "cd demo/checkout-api && node --test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,0 +1,11 @@
+{
+  "name": "checkout-api",
+  "version": "1.4.2",
+  "private": true,
+  "type": "module",
+  "description": "Demo service used by Pager Developer scenarios. Deployed revision contains a real bug.",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "node --experimental-strip-types --check src/checkout/service.ts"
+  }
+}

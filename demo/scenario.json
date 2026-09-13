@@ -1,0 +1,114 @@
+{
+  "id": "INC-001",
+  "title": "Deployment widens a contract and checkout starts throwing",
+  "service": "checkout-api",
+  "repository": "acme/checkout-api",
+  "description": "Checkout API service",
+  "defaultBranch": "main",
+  "workingTree": "checkout-api",
+
+  "windowFrom": "2026-09-13T14:00:00Z",
+  "windowTo": "2026-09-13T15:00:00Z",
+  "deployedAt": "2026-09-13T14:31:00Z",
+
+  "commits": [
+    {
+      "message": "Initial checkout service",
+      "author": "Priya",
+      "at": "2026-09-10T09:00:00Z",
+      "branch": "main",
+      "include": ["**"],
+      "overlay": "history/before-discount-optional",
+      "note": "The whole tree, with the pre-change version of types.ts laid over it."
+    },
+    {
+      "message": "Make discount code optional at checkout",
+      "author": "Dana",
+      "at": "2026-09-13T14:20:00Z",
+      "branch": "feat/optional-discount",
+      "include": ["src/checkout/types.ts"],
+      "note": "Takes the working tree version, which is the widened contract."
+    },
+    {
+      "message": "Merge pull request #377 from acme/feat/optional-discount",
+      "author": "Dana",
+      "at": "2026-09-13T14:29:00Z",
+      "branch": "main",
+      "mergeOf": "feat/optional-discount",
+      "include": []
+    }
+  ],
+
+  "pullRequests": [
+    {
+      "number": 377,
+      "title": "Make discount code optional at checkout",
+      "body": "Customers without a promo code were being blocked at checkout. This widens `OrderRequest.discountCode` to be optional so the field can be omitted.",
+      "headRef": "feat/optional-discount",
+      "baseRef": "main",
+      "mergedAtCommit": "Merge pull request #377 from acme/feat/optional-discount"
+    }
+  ],
+
+  "metrics": [
+    { "service": "checkout-api", "metric": "error_rate", "unit": "ratio", "baseline": 0.004, "after": 0.178, "jitter": 0.08 },
+    { "service": "checkout-api", "metric": "http_5xx_rate", "unit": "ratio", "baseline": 0.003, "after": 0.171, "jitter": 0.08 },
+    { "service": "checkout-api", "metric": "latency_p95", "unit": "ms", "baseline": 182, "after": 179, "jitter": 0.04 },
+    { "service": "checkout-api", "metric": "latency_p50", "unit": "ms", "baseline": 64, "after": 63, "jitter": 0.04 },
+    { "service": "checkout-api", "metric": "request_throughput", "unit": "requests/s", "baseline": 240, "after": 238, "jitter": 0.03 },
+    { "service": "checkout-api", "metric": "availability", "unit": "ratio", "baseline": 0.9996, "after": 0.9994, "jitter": 0.0002 }
+  ],
+
+  "logs": [
+    {
+      "service": "checkout-api",
+      "level": "error",
+      "message": "TypeError: Cannot read properties of null (reading 'percentOff')",
+      "stack": "TypeError: Cannot read properties of null (reading 'percentOff')\n    at CheckoutService.createOrder (/app/src/checkout/service.ts:20:52)\n    at CheckoutController.postCheckout (/app/src/checkout/controller.ts:34:38)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)",
+      "from": "2026-09-13T14:32:00Z",
+      "count": 24,
+      "intervalSeconds": 45,
+      "attributes": { "http.route": "POST /checkout", "http.status_code": 500 }
+    },
+    {
+      "service": "checkout-api",
+      "level": "info",
+      "message": "checkout completed",
+      "from": "2026-09-13T14:05:00Z",
+      "count": 12,
+      "intervalSeconds": 120
+    }
+  ],
+
+  "monitors": [
+    {
+      "name": "checkout-api error rate",
+      "service": "checkout-api",
+      "query": "avg(last_5m):sum:trace.http.request.errors{service:checkout-api}.as_rate() > 0.05",
+      "state": "Alert",
+      "transitionedAt": "2026-09-13T14:34:00Z"
+    },
+    {
+      "name": "checkout-api p95 latency",
+      "service": "checkout-api",
+      "query": "avg(last_5m):p95:trace.http.request.duration{service:checkout-api} > 800",
+      "state": "OK",
+      "transitionedAt": null
+    }
+  ],
+
+  "slackChannels": ["#incidents", "#checkout-team"],
+
+  "pages": [
+    {
+      "id": "runbook-checkout",
+      "title": "Runbook: checkout-api",
+      "file": "runbooks/checkout-api.md"
+    },
+    {
+      "id": "doc-checkout-arch",
+      "title": "checkout-api architecture",
+      "file": "runbooks/architecture.md"
+    }
+  ]
+}
