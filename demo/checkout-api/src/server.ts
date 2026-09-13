@@ -18,7 +18,15 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === 'GET' && path === '/health') {
-      send(200, { status: 'ok', service: 'checkout-api' });
+      // The running process reports the commit it was built from. This is what lets
+      // an investigator establish the revision production is ACTUALLY running,
+      // rather than assuming the head of a branch that has since moved on. Render
+      // injects RENDER_GIT_COMMIT; other platforms have an equivalent.
+      send(200, {
+        status: 'ok',
+        service: 'checkout-api',
+        commit: process.env.RENDER_GIT_COMMIT ?? process.env.GIT_COMMIT ?? null,
+      });
       return;
     }
     if (request.method !== 'POST' || path !== '/orders') {
