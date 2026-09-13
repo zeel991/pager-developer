@@ -27,8 +27,10 @@ import {
   IncidentInvestigator,
   IncidentWorkflow,
   ModelPatchGenerator,
+  toRepositoryPath,
 } from '@pager/agents';
 import { loadConfig, describeConfig, type WorkerConfig } from './config.ts';
+import { renderDashboard } from './dashboard.ts';
 import { deploymentFromRevision, probeDeployedRevision } from './deployed-revision.ts';
 
 const log = (message: string): void => {
@@ -46,14 +48,58 @@ const log = (message: string): void => {
  * strictly read-only, so exposing it cannot cause an incident to be opened,
  * a branch to be created or a message to be sent.
  */
+/**
+ * One incident, recorded in enough detail to be reviewed after the fact.
+ *
+ * The split that matters runs through this type: `diagnosis`, `attribution` and
+ * `confidence` are what a model concluded, while `reproduction` and `checks` are
+ * exit codes from processes that really ran. The dashboard renders them differently
+ * for that reason, and anything absent is shown as not-measured rather than passing.
+ */
+interface IncidentRecord {
+  revision: string;
+  at: string;
+  durationMs: number;
+  outcome: string;
+  pullRequest: string | null;
+  errorType: string | null;
+  occurrences: number;
+  location: string | null;
+  /** Model conclusions. Inferences, never observations. */
+  diagnosis: string | null;
+  attribution: string | null;
+  confidence: number | null;
+  uncertainty: string | null;
+  citedObservations: number;
+  /** Observed: the exit codes of processes that really ran. */
+  reproduction: { command: string; beforeExit: number | null; afterExit: number | null; proven: boolean } | null;
+  checks: { kind: string; passed: boolean; skipped: boolean; exitCode: number | null }[];
+  model: string | null;
+  modelCalls: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  toolCalls: number;
+  failedToolCalls: number;
+}
+
 interface WorkerStatus {
   startedAt: string;
   lastTickAt: string | null;
   lastOutcome: string | null;
   ticks: number;
-  incidents: { revision: string; at: string; outcome: string; pullRequest: string | null }[];
+  /** True while a tick is running, so the page can say "investigating" honestly. */
+  busy: boolean;
+  busySince: string | null;
+  incidents: IncidentRecord[];
   /** Revisions already acted on, so a red monitor produces one PR and not sixty. */
   handledRevisions: string[];
+  config: {
+    service: string;
+    repository: string;
+    model: string;
+    intervalSeconds: number;
+    readOnly: boolean;
+  } | null;
 }
 
 const status: WorkerStatus = {
@@ -61,8 +107,11 @@ const status: WorkerStatus = {
   lastTickAt: null,
   lastOutcome: null,
   ticks: 0,
+  busy: false,
+  busySince: null,
   incidents: [],
   handledRevisions: [],
+  config: null,
 };
 
 function serveStatus(port: number): void {
@@ -73,9 +122,14 @@ function serveStatus(port: number): void {
       response.end(JSON.stringify({ status: 'ok', service: 'pager-developer-worker' }));
       return;
     }
-    if (path === '/' || path === '/status') {
+    if (path === '/status') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(status, null, 2));
+      return;
+    }
+    if (path === '/') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(renderDashboard(status));
       return;
     }
     response.writeHead(404, { 'content-type': 'application/json' });
@@ -84,6 +138,7 @@ function serveStatus(port: number): void {
 }
 
 async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
+  const startedTick = Date.now();
   // 1. Ask the service what it is running. Everything downstream depends on this
   //    being observed rather than assumed, so a failure here ends the tick.
   const probe = await probeDeployedRevision(config.healthUrl);
@@ -166,11 +221,45 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   // re-run a model against an unchanged world and reach the same place.
   handled.add(deployment.commitSha);
   status.handledRevisions = [...handled];
-  status.incidents.push({
+
+  const findings = result.investigation?.findings ?? null;
+  const cluster = result.alert.primary;
+  const frame = cluster?.topApplicationFrame ?? null;
+
+  status.incidents.unshift({
     revision: deployment.commitSha,
     at: new Date().toISOString(),
+    durationMs: Date.now() - startedTick,
     outcome: result.haltReason ? `halted: ${result.haltReason}` : result.stage,
     pullRequest: result.pullRequest?.url ?? null,
+    errorType: cluster?.errorType ?? null,
+    occurrences: cluster?.count ?? 0,
+    location: frame ? `${toRepositoryPath(frame.file)}:${frame.line}` : null,
+    diagnosis: findings?.diagnosis ?? null,
+    attribution: findings?.attribution.verdict ?? null,
+    confidence: findings?.confidence ?? null,
+    uncertainty: findings?.uncertainty ?? null,
+    citedObservations: findings?.evidence.length ?? 0,
+    reproduction: result.reproduction
+      ? {
+          command: result.reproduction.command,
+          beforeExit: result.reproduction.beforeFix.exitCode,
+          afterExit: result.reproduction.afterFix?.exitCode ?? null,
+          proven: result.reproduction.proven,
+        }
+      : null,
+    checks: result.validation.map((v) => ({
+      kind: v.kind,
+      passed: v.passed,
+      skipped: v.skipped,
+      exitCode: v.exitCode,
+    })),
+    model: result.investigation?.model ?? null,
+    modelCalls: result.investigation?.modelCalls.length ?? 0,
+    inputTokens: result.investigation?.totalInputTokens ?? null,
+    outputTokens: result.investigation?.totalOutputTokens ?? null,
+    toolCalls: sink.toolCalls.length,
+    failedToolCalls: sink.failedToolCalls().length,
   });
   status.lastOutcome = result.pullRequest ? `opened ${result.pullRequest.url}` : result.stage;
 
@@ -193,6 +282,13 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
 async function main(): Promise<void> {
   const config = loadConfig();
   log(`Pager Developer worker starting\n  ${describeConfig(config)}`);
+  status.config = {
+    service: config.service,
+    repository: config.repository,
+    model: config.model,
+    intervalSeconds: config.intervalSeconds,
+    readOnly: config.readOnly,
+  };
 
   const handled = new Set<string>();
 
@@ -208,6 +304,8 @@ async function main(): Promise<void> {
   // A failing tick must never kill the watcher: an unreachable Datadog for one
   // minute is not a reason to stop watching production for the rest of the day.
   for (;;) {
+    status.busy = true;
+    status.busySince = new Date().toISOString();
     try {
       await tick(config, handled);
       status.ticks++;
@@ -217,6 +315,9 @@ async function main(): Promise<void> {
       status.lastTickAt = new Date().toISOString();
       status.lastOutcome = `tick failed: ${err instanceof Error ? err.message : String(err)}`;
       log(`tick failed: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+    } finally {
+      status.busy = false;
+      status.busySince = null;
     }
     await new Promise((resolve) => setTimeout(resolve, config.intervalSeconds * 1000));
   }
