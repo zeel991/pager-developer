@@ -18,12 +18,20 @@ import type {
  * is deliberately no `if (arga)` anywhere in this file.
  */
 
-interface GhCommitResponse {
+interface GhCommitDetail {
+  message?: string;
+  author?: { name: string; email?: string; date: string };
+}
+
+/**
+ * Either commit shape GitHub returns.
+ *
+ * REST Commits nests under `commit`; the Git Data API returns the same fields at
+ * the top level. Both are modelled so `toCommit` can accept either.
+ */
+interface GhCommitResponse extends GhCommitDetail {
   sha: string;
-  commit: {
-    message: string;
-    author: { name: string; email?: string; date: string };
-  };
+  commit?: GhCommitDetail;
   parents?: { sha: string }[];
   files?: GhFile[];
 }
@@ -356,13 +364,27 @@ export class GitHubProvider implements SourceControlProvider {
   }
 }
 
+/**
+ * Normalise a commit from either of GitHub's two commit shapes.
+ *
+ * The REST Commits API nests the message and author under `commit`, while the Git
+ * Data API (`/git/commits`, which is what creating a commit returns) puts them at
+ * the top level. They describe the same object and differ only in shape, so a
+ * reader written for one throws on the other — `res.commit.author` is undefined
+ * against the Git Data response, which surfaces as a bare "Cannot read properties
+ * of undefined" with nothing naming the cause.
+ *
+ * Observed against api.github.com while committing a fix to a real repository.
+ */
 function toCommit(res: GhCommitResponse): Commit {
+  const detail = res.commit ?? res;
+  const author = detail.author ?? { name: 'unknown', date: new Date(0).toISOString() };
   return {
     sha: res.sha,
-    message: res.commit.message,
-    authorName: res.commit.author.name,
-    ...(res.commit.author.email ? { authorEmail: res.commit.author.email } : {}),
-    committedAt: new Date(res.commit.author.date),
+    message: detail.message ?? '',
+    authorName: author.name,
+    ...(author.email ? { authorEmail: author.email } : {}),
+    committedAt: new Date(author.date),
     parents: (res.parents ?? []).map((p) => p.sha),
   };
 }
