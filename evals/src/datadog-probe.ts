@@ -130,7 +130,22 @@ async function main(): Promise<void> {
       );
     }
   } catch (err) {
-    report('error logs', false, `could not be read: ${message(err)}`);
+    const text = message(err);
+    // A distinctive, diagnosable condition worth naming rather than passing through
+    // raw: Datadog creates a log index the first time logs arrive, so "no valid
+    // indexes" means this organisation has never ingested a log. That is a delivery
+    // problem upstream, not a query problem here.
+    if (/no valid indexes/i.test(text)) {
+      report(
+        'error logs',
+        false,
+        `this Datadog organisation has NO log indexes, which means it has never received a ` +
+          `log. The query is fine; nothing is arriving. Check the log stream from wherever the ` +
+          `service runs is actually configured and delivering.`,
+      );
+    } else {
+      report('error logs', false, `could not be read: ${text}`);
+    }
   }
 
   // ── 3. Metrics ───────────────────────────────────────────────────────────
