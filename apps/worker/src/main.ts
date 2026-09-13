@@ -15,6 +15,7 @@
  *  - It never merges and never deploys. The only production-affecting act in the
  *    whole system is a human merging the pull request it opened.
  */
+import { createServer } from 'node:http';
 import {
   DatadogProvider,
   GitHubProvider,
@@ -33,6 +34,54 @@ import { deploymentFromRevision, probeDeployedRevision } from './deployed-revisi
 const log = (message: string): void => {
   console.log(`${new Date().toISOString()}  ${message}`);
 };
+
+/**
+ * What the worker has seen and done, exposed over HTTP.
+ *
+ * A watcher that cannot be asked whether it is actually watching is indistinguishable
+ * from one that has quietly died. This also lets the worker run as an ordinary web
+ * service on hosts that only offer those, which is why it binds a port at all.
+ *
+ * Nothing here is a credential and nothing here is a control: the endpoint is
+ * strictly read-only, so exposing it cannot cause an incident to be opened,
+ * a branch to be created or a message to be sent.
+ */
+interface WorkerStatus {
+  startedAt: string;
+  lastTickAt: string | null;
+  lastOutcome: string | null;
+  ticks: number;
+  incidents: { revision: string; at: string; outcome: string; pullRequest: string | null }[];
+  /** Revisions already acted on, so a red monitor produces one PR and not sixty. */
+  handledRevisions: string[];
+}
+
+const status: WorkerStatus = {
+  startedAt: new Date().toISOString(),
+  lastTickAt: null,
+  lastOutcome: null,
+  ticks: 0,
+  incidents: [],
+  handledRevisions: [],
+};
+
+function serveStatus(port: number): void {
+  createServer((request, response) => {
+    const path = new URL(request.url ?? '/', 'http://localhost').pathname;
+    if (path === '/health') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ status: 'ok', service: 'pager-developer-worker' }));
+      return;
+    }
+    if (path === '/' || path === '/status') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(status, null, 2));
+      return;
+    }
+    response.writeHead(404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: 'not_found' }));
+  }).listen(port, '0.0.0.0', () => log(`status endpoint listening on ${port}`));
+}
 
 async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   // 1. Ask the service what it is running. Everything downstream depends on this
@@ -69,6 +118,7 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   //    bug is live, and an agent that re-opened a pull request on every poll would
   //    be indistinguishable from a denial of service against its own reviewers.
   if (handled.has(deployment.commitSha)) {
+    status.lastOutcome = `already handled ${deployment.commitSha.slice(0, 12)}`;
     log(`watching ${config.service} at ${deployment.commitSha.slice(0, 12)} — already handled`);
     return;
   }
@@ -101,10 +151,12 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   });
 
   if (!result.alert) {
+    status.lastOutcome = 'no monitor alerting';
     log(`watching ${config.service} at ${deployment.commitSha.slice(0, 12)} — no monitor alerting`);
     return;
   }
   if (!result.alert.escalate) {
+    status.lastOutcome = `not escalated: ${result.alert.rationale}`;
     log(`not escalated: ${result.alert.rationale}`);
     return;
   }
@@ -113,6 +165,14 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   // whatever the outcome — including a halt. Retrying a halt on a loop would
   // re-run a model against an unchanged world and reach the same place.
   handled.add(deployment.commitSha);
+  status.handledRevisions = [...handled];
+  status.incidents.push({
+    revision: deployment.commitSha,
+    at: new Date().toISOString(),
+    outcome: result.haltReason ? `halted: ${result.haltReason}` : result.stage,
+    pullRequest: result.pullRequest?.url ?? null,
+  });
+  status.lastOutcome = result.pullRequest ? `opened ${result.pullRequest.url}` : result.stage;
 
   const usage = result.investigation;
   log(
@@ -141,12 +201,21 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Bound before the first tick, so the host sees a live service immediately rather
+  // than waiting out an investigation that can take minutes.
+  serveStatus(Number(process.env.PORT ?? 10000));
+
   // A failing tick must never kill the watcher: an unreachable Datadog for one
   // minute is not a reason to stop watching production for the rest of the day.
   for (;;) {
     try {
       await tick(config, handled);
+      status.ticks++;
+      status.lastTickAt = new Date().toISOString();
     } catch (err) {
+      status.ticks++;
+      status.lastTickAt = new Date().toISOString();
+      status.lastOutcome = `tick failed: ${err instanceof Error ? err.message : String(err)}`;
       log(`tick failed: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, config.intervalSeconds * 1000));
