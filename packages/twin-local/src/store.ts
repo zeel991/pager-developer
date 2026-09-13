@@ -118,6 +118,16 @@ export interface StoredPage {
   parentId: string | null;
 }
 
+export interface StoredEmail {
+  id: string;
+  from: string;
+  to: string[];
+  subject: string;
+  text: string;
+  html: string;
+  sentAt: string;
+}
+
 export interface TwinState {
   repositories: Map<string, StoredRepository>;
   metrics: StoredMetricSeries[];
@@ -130,6 +140,10 @@ export interface TwinState {
   installationTokens: Map<string, number>;
   issues: StoredIssue[];
   pages: StoredPage[];
+  /** Git object store, so the real blob/tree/commit flow works. */
+  blobs: Map<string, string>;
+  trees: Map<string, Map<string, string>>;
+  emails: StoredEmail[];
 }
 
 /** Content-addressed sha, so the same seed always produces the same history. */
@@ -246,6 +260,9 @@ export function emptyState(): TwinState {
     installationTokens: new Map(),
     issues: [],
     pages: [],
+    blobs: new Map(),
+    trees: new Map(),
+    emails: [],
   };
 }
 
@@ -272,5 +289,8 @@ export function cloneState(state: TwinState): TwinState {
     installationTokens: new Map(state.installationTokens),
     issues: state.issues.map((i) => ({ ...i, labels: [...i.labels], comments: i.comments.map((c) => ({ ...c })) })),
     pages: state.pages.map((p) => ({ ...p })),
+    blobs: new Map(state.blobs),
+    trees: new Map([...state.trees].map(([k, v]) => [k, new Map(v)])),
+    emails: state.emails.map((e) => ({ ...e, to: [...e.to] })),
   };
 }

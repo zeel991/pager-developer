@@ -24,7 +24,8 @@
     "eval": "pnpm --filter @pager/evals eval",
     "demo:pipeline": "pnpm --filter @pager/evals incident",
     "api": "pnpm --filter @pager/api start",
-    "api:seed": "pnpm --filter @pager/api seed"
+    "api:seed": "pnpm --filter @pager/api seed",
+    "demo:workflow": "pnpm --filter @pager/evals workflow"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

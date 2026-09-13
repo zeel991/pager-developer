@@ -2,6 +2,7 @@ import type { ChangedFile, Commit } from '@pager/core';
 import { Http, ProviderHttpError } from '../http.js';
 import type {
   Branch,
+  CommitFilesInput,
   CreatePullRequestInput,
   Diff,
   PullRequest,
@@ -286,6 +287,57 @@ export class GitHubProvider implements SourceControlProvider {
       draft: input.draft ?? false,
     });
     return toPullRequest(res);
+  }
+
+  /**
+   * Commit file changes onto a branch using the Git Data API.
+   *
+   * Blobs, then a tree layered on the branch's current tree, then a commit, then a
+   * ref update — the same four steps real GitHub requires. Doing it properly rather
+   * than through a convenience endpoint means this works against api.github.com,
+   * an enterprise instance and a twin without branching.
+   */
+  async commitFiles(repo: string, input: CommitFilesInput): Promise<Commit> {
+    const ref = await this.http.get<{ object: { sha: string } }>(
+      `/repos/${repo}/git/ref/heads/${input.branch}`,
+    );
+    const parentSha = ref.object.sha;
+    const parentCommit = await this.http.get<{ tree: { sha: string } }>(
+      `/repos/${repo}/git/commits/${parentSha}`,
+    );
+
+    const tree: Record<string, unknown>[] = [];
+    for (const change of input.changes) {
+      if (change.content === null) {
+        // A null sha removes the path from the tree, which is how the API deletes.
+        tree.push({ path: change.path, mode: '100644', type: 'blob', sha: null });
+        continue;
+      }
+      const blob = await this.http.post<{ sha: string }>(`/repos/${repo}/git/blobs`, {
+        content: Buffer.from(change.content, 'utf8').toString('base64'),
+        encoding: 'base64',
+      });
+      tree.push({ path: change.path, mode: '100644', type: 'blob', sha: blob.sha });
+    }
+
+    const newTree = await this.http.post<{ sha: string }>(`/repos/${repo}/git/trees`, {
+      base_tree: parentCommit.tree.sha,
+      tree,
+    });
+
+    const commit = await this.http.post<GhCommitResponse>(`/repos/${repo}/git/commits`, {
+      message: input.message,
+      tree: newTree.sha,
+      parents: [parentSha],
+      ...(input.author ? { author: { name: input.author, email: `${input.author}@pager.local` } } : {}),
+    });
+
+    await this.http.patch(`/repos/${repo}/git/refs/heads/${input.branch}`, {
+      sha: commit.sha,
+      force: false,
+    });
+
+    return toCommit(commit);
   }
 
   /**

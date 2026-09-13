@@ -33,6 +33,13 @@ export interface Branch {
   sha: string;
 }
 
+export interface CommitFilesInput {
+  branch: string;
+  message: string;
+  author?: string;
+  changes: { path: string; content: string | null }[];
+}
+
 export interface CreatePullRequestInput {
   title: string;
   body: string;
@@ -55,6 +62,8 @@ export interface SourceControlProvider {
   listFiles(repo: string, ref: string): Promise<string[]>;
   createBranch(repo: string, fromSha: string, name: string): Promise<Branch>;
   createPullRequest(repo: string, input: CreatePullRequestInput): Promise<PullRequest>;
+  /** Commit a set of file changes onto a branch. `null` content deletes a file. */
+  commitFiles(repo: string, input: CommitFilesInput): Promise<Commit>;
   /** Clone URL for the reproduction sandbox. May embed a twin credential. */
   cloneUrl(repo: string): string;
 }

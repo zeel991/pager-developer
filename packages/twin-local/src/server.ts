@@ -4,6 +4,7 @@ import { githubRoutes } from './github-routes.js';
 import { matchRoute, type Route } from './router.js';
 import { slackRoutes } from './slack-routes.js';
 import { jiraRoutes, linearRoutes, notionRoutes } from './tracker-routes.js';
+import { resendRoutes } from './email-routes.js';
 import { cloneState, emptyState, type TwinState } from './store.js';
 
 /**
@@ -32,6 +33,7 @@ export interface TwinEndpoints {
   jira: string;
   linear: string;
   notion: string;
+  resend: string;
 }
 
 export class LocalTwinServer {
@@ -51,6 +53,7 @@ export class LocalTwinServer {
       { prefix: '/jira', routes: jiraRoutes() },
       { prefix: '/linear', routes: linearRoutes() },
       { prefix: '/notion', routes: notionRoutes() },
+      { prefix: '/resend', routes: resendRoutes() },
     ];
   }
 
@@ -82,6 +85,7 @@ export class LocalTwinServer {
       jira: `${base}/jira`,
       linear: `${base}/linear`,
       notion: `${base}/notion`,
+      resend: `${base}/resend`,
     };
   }
 

@@ -294,6 +294,9 @@ importers:
       '@pager/providers':
         specifier: workspace:*
         version: link:../providers
+      '@pager/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       zod:
         specifier: ^4.1.5
         version: 4.6.2

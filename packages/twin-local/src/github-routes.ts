@@ -433,44 +433,141 @@ export function githubRoutes(): Route[] {
         return { status: 201, body: prJson(repo, pr) };
       },
     },
+    // ── Git Data API ─────────────────────────────────────────────────────────
+    // The real four-step commit flow, so the adapter exercises the same path here
+    // as against api.github.com.
     {
-      // Commit a set of file changes onto a branch. Used by the fix agent.
+      method: 'GET',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/ref\/heads\/(.+)$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
+        const sha = repo?.branches.get(decodeURIComponent(ctx.params[2]!));
+        if (!repo || !sha) return { status: 404, body: { message: 'Not Found' } };
+        return {
+          status: 200,
+          body: { ref: `refs/heads/${ctx.params[2]}`, object: { sha, type: 'commit' } },
+        };
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/commits\/([^/]+)$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
+        const commit = repo ? findCommit(repo, ctx.params[2]!) : undefined;
+        if (!repo || !commit) return { status: 404, body: { message: 'Not Found' } };
+        return {
+          status: 200,
+          body: {
+            sha: commit.sha,
+            message: commit.message,
+            // The tree is addressed by the commit it belongs to.
+            tree: { sha: commit.sha },
+            parents: commit.parents.map((p) => ({ sha: p })),
+          },
+        };
+      },
+    },
+    {
       method: 'POST',
-      pattern: /^\/repos\/([^/]+)\/([^/]+)\/_commits$/,
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/blobs$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const body = ctx.json as { content?: string; encoding?: string };
+        const content =
+          body.encoding === 'base64'
+            ? Buffer.from(body.content ?? '', 'base64').toString('utf8')
+            : (body.content ?? '');
+        const sha = blobSha(content);
+        ctx.state.blobs.set(sha, content);
+        return { status: 201, body: { sha, url: `/git/blobs/${sha}` } };
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/trees$/,
       handler: (ctx) => {
         if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
         const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
         if (!repo) return { status: 404, body: { message: 'Not Found' } };
-        const body = ctx.json as {
-          branch?: string;
-          message?: string;
-          author?: string;
-          changes?: { path: string; content: string | null }[];
-        };
-        const branch = body.branch ?? repo.defaultBranch;
-        const parentSha = repo.branches.get(branch);
-        const parent = parentSha ? repo.commits.find((c) => c.sha === parentSha) : undefined;
-        if (!parent) return { status: 422, body: { message: `Unknown branch ${branch}` } };
 
-        const files = new Map(parent.files);
-        for (const change of body.changes ?? []) {
-          if (change.content === null) files.delete(change.path);
-          else files.set(change.path, change.content);
+        const body = ctx.json as {
+          base_tree?: string;
+          tree?: { path: string; sha: string | null }[];
+        };
+        const base = body.base_tree ? findCommit(repo, body.base_tree) : undefined;
+        const files = new Map(base?.files ?? []);
+
+        for (const entry of body.tree ?? []) {
+          if (entry.sha === null) {
+            files.delete(entry.path);
+            continue;
+          }
+          const content = ctx.state.blobs.get(entry.sha);
+          if (content === undefined) {
+            return { status: 422, body: { message: `Unknown blob ${entry.sha}` } };
+          }
+          files.set(entry.path, content);
         }
+
+        const sha = commitSha('tree', [body.base_tree ?? ''], files);
+        ctx.state.trees.set(sha, files);
+        return { status: 201, body: { sha } };
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/commits$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
+        if (!repo) return { status: 404, body: { message: 'Not Found' } };
+
+        const body = ctx.json as {
+          message?: string;
+          tree?: string;
+          parents?: string[];
+          author?: { name?: string; email?: string };
+        };
+        const files = body.tree ? ctx.state.trees.get(body.tree) : undefined;
+        if (!files) return { status: 422, body: { message: `Unknown tree ${body.tree}` } };
+
         const message = body.message ?? 'Update';
-        const sha = commitSha(message, [parent.sha], files);
+        const parents = body.parents ?? [];
+        const sha = commitSha(message, parents, files);
         const commit: StoredCommit = {
           sha,
           message,
-          authorName: body.author ?? 'pager-developer',
-          authorEmail: 'pager@example.com',
+          authorName: body.author?.name ?? 'pager-developer',
+          authorEmail: body.author?.email ?? 'pager@example.com',
           committedAt: new Date(ctx.now()).toISOString(),
-          parents: [parent.sha],
-          files,
+          parents,
+          files: new Map(files),
         };
         repo.commits.unshift(commit);
-        repo.branches.set(branch, sha);
-        return { status: 201, body: commitJson(repo, commit, true) };
+        return { status: 201, body: commitJson(repo, commit) };
+      },
+    },
+    {
+      method: 'PATCH',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/refs\/heads\/(.+)$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
+        if (!repo) return { status: 404, body: { message: 'Not Found' } };
+        const body = ctx.json as { sha?: string };
+        const branch = decodeURIComponent(ctx.params[2]!);
+        if (!body.sha || !repo.commits.some((c) => c.sha === body.sha)) {
+          return { status: 422, body: { message: 'Object does not exist' } };
+        }
+        repo.branches.set(branch, body.sha);
+        // A pull request tracks its branch, so its head follows the new commit.
+        for (const pr of repo.pullRequests) {
+          if (pr.headRef === branch) pr.headSha = body.sha;
+        }
+        return { status: 200, body: { ref: `refs/heads/${branch}`, object: { sha: body.sha } } };
       },
     },
   ];
