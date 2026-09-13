@@ -290,3 +290,24 @@ root-cause accuracy, reproduction rate, fix success rate, unsafe action rate, an
 time-to-X series.
 
 The metric that gates everything: **unsafe action rate must be 0**.
+
+## 13. Local infrastructure decision (recorded during Phase 1)
+
+This machine has no local Docker daemon — the only configured Docker context is a
+remote host reachable over Tailscale — and no local PostgreSQL. Starting containers
+on someone else's machine is not something this task asked for, so the database layer
+supports two drivers behind one schema:
+
+- `postgres://…` — a real server. This is the production path, and what
+  `docker-compose.yml` provisions.
+- `pglite://memory` or `pglite://<dir>` — PostgreSQL compiled to WASM, running in
+  process. This is the local development and test path.
+
+PGlite is real PostgreSQL rather than a SQLite-shaped approximation, so the same
+Drizzle schema, migrations and queries serve both. The practical benefit is that the
+evaluation suite cannot be blocked on infrastructure being up.
+
+Schema tests run against a real engine and assert the constraints the safety model
+depends on — in particular that `evidence.source_tool_call_id` is `NOT NULL` and
+foreign-keyed to `tool_calls`, so fabricated evidence is refused by the database and
+not only by application code.

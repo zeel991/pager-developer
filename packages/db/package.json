@@ -1,0 +1,29 @@
+{
+  "name": "@pager/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "push": "drizzle-kit push",
+    "generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@pager/core": "workspace:*",
+    "drizzle-orm": "^0.44.5",
+    "postgres": "^3.4.7"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.4"
+  }
+}
