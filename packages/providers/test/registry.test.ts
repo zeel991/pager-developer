@@ -100,3 +100,70 @@ describe('provider registry', () => {
     expect(providers.sourceControl.cloneUrl('a/b')).toBe('http://localhost:4010/a/b.git');
   });
 });
+
+describe('registry: issue tracking and knowledge', () => {
+  const localUrls = {
+    github: 'http://localhost:4010',
+    datadog: 'http://localhost:4011',
+    slack: 'http://localhost:4012',
+    jira: 'http://localhost:4013',
+    linear: 'http://localhost:4014',
+    notion: 'http://localhost:4015',
+  };
+  const localCore = config({
+    sourceControl: 'local',
+    observability: 'local',
+    messaging: 'local',
+    baseUrls: localUrls,
+  });
+
+  it('omits both when not configured, rather than inventing a default tracker', () => {
+    const providers = buildProviders({ config: localCore });
+    expect(providers.issueTracker).toBeNull();
+    expect(providers.knowledge).toBeNull();
+  });
+
+  it('builds a Jira tracker and a Notion knowledge base', () => {
+    const providers = buildProviders({
+      config: {
+        ...localCore,
+        issueTracker: { kind: 'jira', backend: 'local' },
+        knowledge: { kind: 'notion', backend: 'local' },
+        jiraProjectKey: 'INC',
+      },
+    });
+    expect(providers.issueTracker?.kind).toBe('issue-tracker');
+    expect(providers.knowledge?.kind).toBe('knowledge');
+  });
+
+  it('builds a Linear tracker', () => {
+    const providers = buildProviders({
+      config: { ...localCore, issueTracker: { kind: 'linear', backend: 'local' }, linearTeamId: 'team_eng' },
+    });
+    expect(providers.issueTracker?.kind).toBe('issue-tracker');
+  });
+
+  it('refuses a tracker whose required identifier is missing', () => {
+    expect(() =>
+      buildProviders({ config: { ...localCore, issueTracker: { kind: 'jira', backend: 'local' } } }),
+    ).toThrow(/jiraProjectKey is not set/);
+    expect(() =>
+      buildProviders({ config: { ...localCore, issueTracker: { kind: 'linear', backend: 'local' } } }),
+    ).toThrow(/linearTeamId is not set/);
+  });
+
+  it('provisions only the twins the extra integrations need', () => {
+    expect(
+      requiredTwins(
+        config({
+          issueTracker: { kind: 'linear', backend: 'arga' },
+          knowledge: { kind: 'notion', backend: 'arga' },
+        }),
+      ),
+    ).toEqual(['github', 'datadog', 'slack', 'linear', 'notion']);
+
+    expect(
+      requiredTwins(config({ issueTracker: { kind: 'jira', backend: 'local' } })),
+    ).toEqual(['github', 'datadog', 'slack']);
+  });
+});

@@ -7,3 +7,6 @@ export * from './github/github-provider.js';
 export * from './github/app-auth.js';
 export * from './datadog/datadog-provider.js';
 export * from './slack/slack-provider.js';
+export * from './jira/jira-provider.js';
+export * from './linear/linear-provider.js';
+export * from './notion/notion-provider.js';

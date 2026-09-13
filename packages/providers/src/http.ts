@@ -68,6 +68,14 @@ export class Http {
     return this.request<T>('PATCH', this.url(path), body);
   }
 
+  async put<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>('PUT', this.url(path), body);
+  }
+
+  async delete<T>(path: string): Promise<T> {
+    return this.request<T>('DELETE', this.url(path));
+  }
+
   /** GET returning null on 404, for genuinely optional resources. */
   async getOptional<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T | null> {
     try {

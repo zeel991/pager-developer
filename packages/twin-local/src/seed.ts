@@ -76,6 +76,8 @@ export interface ScenarioFixture {
   logs?: LogFixture[];
   monitors?: Omit<StoredMonitor, 'id'>[];
   slackChannels?: string[];
+  /** Runbooks and service docs an investigation may consult. */
+  pages?: { id?: string; title: string; content: string }[];
 }
 
 const SAMPLE_INTERVAL_MS = 60_000;
@@ -203,6 +205,13 @@ export function seedFromFixture(fixture: ScenarioFixture): TwinState {
   state.logs = buildLogs(fixture.logs ?? []);
   state.monitors = (fixture.monitors ?? []).map((m, i) => ({ ...m, id: i + 1 }));
   for (const c of fixture.slackChannels ?? ['#incidents']) state.channels.add(c);
+
+  state.pages = (fixture.pages ?? []).map((p, i) => ({
+    id: p.id ?? `page-${i + 1}`,
+    title: p.title,
+    content: p.content,
+    parentId: null,
+  }));
 
   return state;
 }

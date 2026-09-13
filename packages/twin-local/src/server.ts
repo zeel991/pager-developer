@@ -3,6 +3,7 @@ import { datadogRoutes } from './datadog-routes.js';
 import { githubRoutes } from './github-routes.js';
 import { matchRoute, type Route } from './router.js';
 import { slackRoutes } from './slack-routes.js';
+import { jiraRoutes, linearRoutes, notionRoutes } from './tracker-routes.js';
 import { cloneState, emptyState, type TwinState } from './store.js';
 
 /**
@@ -28,6 +29,9 @@ export interface TwinEndpoints {
   github: string;
   datadog: string;
   slack: string;
+  jira: string;
+  linear: string;
+  notion: string;
 }
 
 export class LocalTwinServer {
@@ -44,6 +48,9 @@ export class LocalTwinServer {
       { prefix: '/github', routes: githubRoutes() },
       { prefix: '/datadog', routes: datadogRoutes() },
       { prefix: '/slack', routes: slackRoutes() },
+      { prefix: '/jira', routes: jiraRoutes() },
+      { prefix: '/linear', routes: linearRoutes() },
+      { prefix: '/notion', routes: notionRoutes() },
     ];
   }
 
@@ -68,7 +75,14 @@ export class LocalTwinServer {
 
   endpoints(): TwinEndpoints {
     const base = `http://127.0.0.1:${this.boundPort}`;
-    return { github: `${base}/github`, datadog: `${base}/datadog`, slack: `${base}/slack` };
+    return {
+      github: `${base}/github`,
+      datadog: `${base}/datadog`,
+      slack: `${base}/slack`,
+      jira: `${base}/jira`,
+      linear: `${base}/linear`,
+      notion: `${base}/notion`,
+    };
   }
 
   async start(): Promise<TwinEndpoints> {

@@ -96,6 +96,28 @@ export interface GitHubApp {
   permissions: Record<string, string>;
 }
 
+export interface StoredIssue {
+  id: string;
+  key: string;
+  title: string;
+  description: string;
+  /** Provider-native status name, so each twin can map it as the real API would. */
+  status: string;
+  labels: string[];
+  priority: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  comments: { id: string; body: string; createdAt: string }[];
+}
+
+export interface StoredPage {
+  id: string;
+  title: string;
+  /** Plain text; the Notion twin renders it into blocks on read. */
+  content: string;
+  parentId: string | null;
+}
+
 export interface TwinState {
   repositories: Map<string, StoredRepository>;
   metrics: StoredMetricSeries[];
@@ -106,6 +128,8 @@ export interface TwinState {
   apps: Map<number, GitHubApp>;
   manifestCodes: Map<string, number>;
   installationTokens: Map<string, number>;
+  issues: StoredIssue[];
+  pages: StoredPage[];
 }
 
 /** Content-addressed sha, so the same seed always produces the same history. */
@@ -220,6 +244,8 @@ export function emptyState(): TwinState {
     apps: new Map(),
     manifestCodes: new Map(),
     installationTokens: new Map(),
+    issues: [],
+    pages: [],
   };
 }
 
@@ -244,5 +270,7 @@ export function cloneState(state: TwinState): TwinState {
     apps: new Map(state.apps),
     manifestCodes: new Map(state.manifestCodes),
     installationTokens: new Map(state.installationTokens),
+    issues: state.issues.map((i) => ({ ...i, labels: [...i.labels], comments: i.comments.map((c) => ({ ...c })) })),
+    pages: state.pages.map((p) => ({ ...p })),
   };
 }

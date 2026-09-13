@@ -139,16 +139,76 @@ export interface IssueRef {
   url: string;
 }
 
+/**
+ * A normalised issue state.
+ *
+ * Jira workflows and Linear team states are both configurable and neither maps onto
+ * the other, so adapters translate to this vocabulary rather than leaking their own.
+ * `blocked` exists because an incident that is waiting on a human approval is not
+ * the same as one being worked on, and the distinction matters on an incident board.
+ */
+export type IssueState = 'open' | 'in_progress' | 'blocked' | 'resolved' | 'closed';
+
+export type IssuePriority = 'urgent' | 'high' | 'medium' | 'low';
+
+export interface Issue {
+  id: string;
+  key: string;
+  url: string;
+  title: string;
+  description: string;
+  state: IssueState;
+  labels: string[];
+  createdAt: Date;
+  updatedAt: Date | null;
+}
+
+export interface IssueComment {
+  id: string;
+  body: string;
+  createdAt: Date;
+}
+
+export interface CreateIssueInput {
+  title: string;
+  description: string;
+  labels?: string[];
+  priority?: IssuePriority;
+}
+
 export interface IssueTrackerProvider {
   readonly kind: 'issue-tracker';
-  createIssue(input: { title: string; description: string; labels?: string[] }): Promise<IssueRef>;
-  updateIssue(id: string, input: { description?: string; state?: string }): Promise<void>;
+  createIssue(input: CreateIssueInput): Promise<IssueRef>;
+  getIssue(idOrKey: string): Promise<Issue | null>;
+  updateIssue(
+    idOrKey: string,
+    input: { title?: string; description?: string; state?: IssueState },
+  ): Promise<void>;
+  /** Incident updates are appended as comments, never by rewriting the description. */
+  addComment(idOrKey: string, body: string): Promise<IssueComment>;
+  listComments(idOrKey: string): Promise<IssueComment[]>;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  title: string;
+  url: string;
+  content: string;
+}
+
+export interface KnowledgeSearchResult {
+  id: string;
+  title: string;
+  url: string;
+  excerpt: string;
 }
 
 export interface KnowledgeProvider {
   readonly kind: 'knowledge';
-  search(query: string, limit?: number): Promise<{ title: string; url: string; excerpt: string }[]>;
-  getDocument(id: string): Promise<{ title: string; content: string } | null>;
+  search(query: string, limit?: number): Promise<KnowledgeSearchResult[]>;
+  getDocument(id: string): Promise<KnowledgeDocument | null>;
+  /** Used for incident postmortems. WRITE_NON_PRODUCTION. */
+  createDocument(input: { title: string; content: string; parentId?: string }): Promise<KnowledgeDocument>;
 }
 
 export interface DeploymentRecord {

@@ -254,4 +254,33 @@ export const INC_001: ScenarioFixture = {
   ],
 
   slackChannels: ['#incidents', '#checkout-team'],
+
+  pages: [
+    {
+      id: 'runbook-checkout',
+      title: 'Runbook: checkout-api',
+      content: [
+        '# Runbook: checkout-api',
+        'Owner: payments-team. Tier 1 service. Handles POST /checkout.',
+        '## Rollback',
+        'Redeploy the previous release tag. Rollback is safe: checkout-api holds no migration state.',
+        '## Known failure modes',
+        '- Upstream payment gateway 503s surface as PaymentGatewayError and are NOT caused by our deploys.',
+        '- Null dereferences in createOrder have historically followed changes to the OrderRequest contract.',
+        '## Escalation',
+        'Page the payments on-call. Do not modify the production database under any circumstances.',
+      ].join('\n\n'),
+    },
+    {
+      id: 'doc-checkout-arch',
+      title: 'checkout-api architecture',
+      content: [
+        '# checkout-api architecture',
+        'CheckoutController validates the request body and delegates to CheckoutService.createOrder.',
+        'createOrder computes a subtotal, applies any discount, and returns an Order.',
+        'The OrderRequest contract is shared with the storefront, so widening a field there can ' +
+          'change what reaches createOrder at runtime without changing createOrder itself.',
+      ].join('\n\n'),
+    },
+  ],
 };

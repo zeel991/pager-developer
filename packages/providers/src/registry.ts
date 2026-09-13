@@ -1,8 +1,13 @@
 import { DatadogProvider } from './datadog/datadog-provider.js';
 import { GitHubProvider } from './github/github-provider.js';
+import { JiraProvider } from './jira/jira-provider.js';
+import { LinearProvider } from './linear/linear-provider.js';
+import { NotionProvider } from './notion/notion-provider.js';
 import { SlackProvider } from './slack/slack-provider.js';
 import type { TwinRun } from './arga/twin-run.js';
 import type {
+  IssueTrackerProvider,
+  KnowledgeProvider,
   MessagingProvider,
   ObservabilityProvider,
   SourceControlProvider,
@@ -18,24 +23,49 @@ import type {
 
 export type Backend = 'arga' | 'real' | 'local';
 
+/** Which product backs issue tracking. Incidents need exactly one. */
+export type IssueTrackerKind = 'jira' | 'linear' | 'none';
+export type KnowledgeKind = 'notion' | 'none';
+
 export interface ProviderConfig {
   sourceControl: Backend;
   observability: Backend;
   messaging: Backend;
+  /** Optional. Incident tracking and runbooks are useful, not required. */
+  issueTracker?: { kind: IssueTrackerKind; backend: Backend };
+  knowledge?: { kind: KnowledgeKind; backend: Backend };
   /** Pinned endpoints, used by `local`, and by `real` when self-hosted. */
-  baseUrls: { github?: string; datadog?: string; slack?: string };
+  baseUrls: {
+    github?: string;
+    datadog?: string;
+    slack?: string;
+    jira?: string;
+    linear?: string;
+    notion?: string;
+  };
   credentials: {
     githubToken?: string;
     slackBotToken?: string;
     datadogApiKey?: string;
     datadogAppKey?: string;
+    jiraEmail?: string;
+    jiraApiToken?: string;
+    linearApiKey?: string;
+    notionToken?: string;
   };
+  /** Required when issueTracker.kind is set. */
+  jiraProjectKey?: string;
+  linearTeamId?: string;
+  notionParentPageId?: string;
 }
 
 export interface Providers {
   sourceControl: SourceControlProvider;
   observability: ObservabilityProvider;
   messaging: MessagingProvider;
+  /** Null when not configured. Callers must handle absence rather than assume one. */
+  issueTracker: IssueTrackerProvider | null;
+  knowledge: KnowledgeProvider | null;
 }
 
 export class ProviderConfigError extends Error {
@@ -46,7 +76,14 @@ export class ProviderConfigError extends Error {
 }
 
 /** Canonical twin names, so a typo becomes a config error rather than a 404 later. */
-const TWIN = { github: 'github', datadog: 'datadog', slack: 'slack' } as const;
+const TWIN = {
+  github: 'github',
+  datadog: 'datadog',
+  slack: 'slack',
+  jira: 'jira',
+  linear: 'linear',
+  notion: 'notion',
+} as const;
 
 export interface BuildProvidersOptions {
   config: ProviderConfig;
@@ -141,7 +178,12 @@ export function buildProviders(opts: BuildProvidersOptions): Providers {
     'https://slack.com',
   );
 
+  const issueTracker = buildIssueTracker(config, resolve, opts.fetchImpl);
+  const knowledge = buildKnowledge(config, resolve, opts.fetchImpl);
+
   return {
+    issueTracker,
+    knowledge,
     sourceControl: new GitHubProvider({
       baseUrl: gh.baseUrl,
       ...(gh.token ? { token: gh.token } : {}),
@@ -163,11 +205,92 @@ export function buildProviders(opts: BuildProvidersOptions): Providers {
   };
 }
 
+type Resolver = (
+  backend: Backend,
+  twinName: string,
+  pinnedUrl: string | undefined,
+  envVarNames: string[],
+  realToken: string | undefined,
+  realDefaultUrl: string,
+) => { baseUrl: string; token: string | undefined; env: Record<string, string> };
+
+function buildIssueTracker(
+  config: ProviderConfig,
+  resolve: Resolver,
+  fetchImpl?: typeof globalThis.fetch,
+): IssueTrackerProvider | null {
+  const spec = config.issueTracker;
+  if (!spec || spec.kind === 'none') return null;
+
+  if (spec.kind === 'jira') {
+    if (!config.jiraProjectKey) {
+      throw new ProviderConfigError('issueTracker.kind is "jira" but jiraProjectKey is not set.');
+    }
+    const r = resolve(
+      spec.backend, TWIN.jira, config.baseUrls.jira,
+      ['JIRA_API_TOKEN', 'JIRA_TOKEN'], config.credentials.jiraApiToken,
+      'https://your-site.atlassian.net',
+    );
+    return new JiraProvider({
+      baseUrl: r.baseUrl,
+      projectKey: config.jiraProjectKey,
+      ...(config.credentials.jiraEmail && r.token
+        ? { email: config.credentials.jiraEmail, apiToken: r.token }
+        : r.token
+          ? { token: r.token }
+          : {}),
+      ...(fetchImpl ? { fetchImpl } : {}),
+    });
+  }
+
+  if (!config.linearTeamId) {
+    throw new ProviderConfigError('issueTracker.kind is "linear" but linearTeamId is not set.');
+  }
+  const r = resolve(
+    spec.backend, TWIN.linear, config.baseUrls.linear,
+    ['LINEAR_API_KEY'], config.credentials.linearApiKey,
+    'https://api.linear.app',
+  );
+  return new LinearProvider({
+    baseUrl: r.baseUrl,
+    teamId: config.linearTeamId,
+    ...(r.token ? { apiKey: r.token } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
+  });
+}
+
+function buildKnowledge(
+  config: ProviderConfig,
+  resolve: Resolver,
+  fetchImpl?: typeof globalThis.fetch,
+): KnowledgeProvider | null {
+  const spec = config.knowledge;
+  if (!spec || spec.kind === 'none') return null;
+
+  const r = resolve(
+    spec.backend, TWIN.notion, config.baseUrls.notion,
+    ['NOTION_TOKEN', 'NOTION_API_KEY'], config.credentials.notionToken,
+    'https://api.notion.com',
+  );
+  return new NotionProvider({
+    baseUrl: r.baseUrl,
+    ...(r.token ? { token: r.token } : {}),
+    ...(config.notionParentPageId ? { parentPageId: config.notionParentPageId } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
+  });
+}
+
 /** Which twins a config requires. Used to provision exactly what is needed. */
 export function requiredTwins(config: ProviderConfig): string[] {
   const wanted: string[] = [];
   if (config.sourceControl === 'arga') wanted.push(TWIN.github);
   if (config.observability === 'arga') wanted.push(TWIN.datadog);
   if (config.messaging === 'arga') wanted.push(TWIN.slack);
+  if (config.issueTracker?.backend === 'arga' && config.issueTracker.kind !== 'none') {
+    wanted.push(config.issueTracker.kind === 'jira' ? TWIN.jira : TWIN.linear);
+  }
+  if (config.knowledge?.backend === 'arga' && config.knowledge.kind !== 'none') {
+    wanted.push(TWIN.notion);
+  }
   return wanted;
 }
