@@ -406,10 +406,18 @@ export function notionRoutes(): Route[] {
           return { status: 400, body: { object: 'error', code: 'missing_version', message: 'Notion-Version header is required' } };
         }
         const body = ctx.json as { query?: string; page_size?: number };
-        const q = (body.query ?? '').toLowerCase();
-        const hits = ctx.state.pages.filter(
-          (p) => !q || p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q),
-        );
+        // Tokenised, like real Notion: every term must appear somewhere in the
+        // page. Matching the whole query as one substring would miss
+        // "runbook checkout-api" against a page titled "Runbook: checkout-api".
+        const terms = (body.query ?? '')
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((t) => t.length > 0);
+        const hits = ctx.state.pages.filter((p) => {
+          if (terms.length === 0) return true;
+          const haystack = `${p.title} ${p.content}`.toLowerCase();
+          return terms.every((t) => haystack.includes(t));
+        });
         return {
           status: 200,
           body: { object: 'list', results: hits.slice(0, body.page_size ?? 10).map(notionPageJson) },

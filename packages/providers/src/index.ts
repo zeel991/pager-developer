@@ -10,3 +10,4 @@ export * from './slack/slack-provider.js';
 export * from './jira/jira-provider.js';
 export * from './linear/linear-provider.js';
 export * from './notion/notion-provider.js';
+export * from './email/resend-provider.js';
