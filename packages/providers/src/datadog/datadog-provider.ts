@@ -175,8 +175,34 @@ export class DatadogProvider implements ObservabilityProvider {
     });
   }
 
+  /**
+   * Monitors that concern a service.
+   *
+   * Datadog has two different tag filters and they mean different things:
+   * `monitor_tags` matches tags applied TO the monitor, while `tags` matches the
+   * scope tags derived from the monitor's own query. Teams tag either way, and
+   * querying only one silently returns nothing for the other — which reads as
+   * "this service has no monitors" rather than "we asked the wrong question".
+   * Measured against a real account: a monitor tagged `service:checkout-api` is
+   * invisible to `tags=` and found by `monitor_tags=`.
+   *
+   * Both are queried and the results merged by id.
+   */
   async listMonitors(service: string): Promise<MonitorState[]> {
-    const res = await this.http.get<DdMonitor[]>('/api/v1/monitor', { tags: `service:${service}` });
+    const [tagged, scoped] = await Promise.all([
+      this.http.get<DdMonitor[]>('/api/v1/monitor', { monitor_tags: `service:${service}` }),
+      this.http
+        .get<DdMonitor[]>('/api/v1/monitor', { tags: `service:${service}` })
+        // A failure of the secondary filter must not lose the primary result.
+        .catch(() => [] as DdMonitor[]),
+    ]);
+
+    const byId = new Map<number | string, DdMonitor>();
+    for (const m of [...(tagged ?? []), ...(scoped ?? [])]) {
+      if (m?.id !== undefined) byId.set(m.id, m);
+    }
+    const res = [...byId.values()];
+
     return (res ?? []).map((m) => ({
       id: String(m.id),
       name: m.name,
