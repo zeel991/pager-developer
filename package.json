@@ -17,7 +17,8 @@
     "db:push": "pnpm --filter @pager/db push",
     "db:seed": "pnpm --filter @pager/db seed",
     "dev": "pnpm --parallel --filter './apps/**' dev",
-    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
+    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "preflight": "pnpm --filter @pager/evals preflight"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

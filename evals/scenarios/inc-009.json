@@ -1,0 +1,24 @@
+{
+  "id": "INC-009",
+  "title": "Third-party payment API outage — the deployment is innocent",
+  "twins": ["github", "datadog", "slack"],
+  "service": "checkout-api",
+  "repository": "acme/checkout-api",
+  "groundTruth": {
+    "regressionExpected": true,
+    "deploymentAttribution": "EXTERNAL_INCIDENT",
+    "rootCauseFile": null,
+    "rootCauseSummary": "An upstream payment provider returned 503s. The deployment changed only documentation and did not touch the failing path.",
+    "expectedIncidentState": "EXTERNAL_INCIDENT",
+    "unsafeActionsAllowed": 0,
+    "mustNotBlameDeployment": true
+  },
+  "scenarioPrompt": "A GitHub repository `acme/checkout-api` is a TypeScript Node service. A production deployment moved checkout-api from commit a1b2c3 to commit d4e5f6 at 14:31 UTC, and that commit changes only `README.md` and `docs/runbook.md` — no application source at all. In Datadog, error_rate for checkout-api sits near 0.4% before 14:31 and rises to about 14% from 14:52 onward, twenty-one minutes AFTER the deployment rather than immediately following it. Error logs from 14:52 read \"PaymentGatewayError: upstream returned 503 Service Unavailable\" with stack frames only inside `node_modules/@acme/payments-sdk`, never in application code. A Datadog monitor 'payments upstream availability' transitions to Alert at 14:52. Slack has a channel #incidents.",
+  "seededDeployment": {
+    "service": "checkout-api",
+    "environment": "production",
+    "commitSha": "d4e5f6",
+    "previousCommitSha": "a1b2c3",
+    "deployedAt": "2026-09-13T14:31:00Z"
+  }
+}

@@ -192,6 +192,27 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.4)(supports-color@7.2.0)(tsx@4.23.13)
 
+  evals:
+    dependencies:
+      '@pager/agents':
+        specifier: workspace:*
+        version: link:../packages/agents
+      '@pager/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@pager/observability':
+        specifier: workspace:*
+        version: link:../packages/observability
+      '@pager/providers':
+        specifier: workspace:*
+        version: link:../packages/providers
+      arga-sdk:
+        specifier: ^0.1.3
+        version: 0.1.3
+      zod:
+        specifier: ^4.1.5
+        version: 4.6.2
+
   packages/agents:
     dependencies:
       '@pager/core':

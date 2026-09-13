@@ -1,0 +1,19 @@
+{
+  "name": "@pager/evals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "preflight": "node --env-file-if-exists=../.env --experimental-strip-types src/preflight.ts"
+  },
+  "dependencies": {
+    "@pager/agents": "workspace:*",
+    "@pager/core": "workspace:*",
+    "@pager/observability": "workspace:*",
+    "@pager/providers": "workspace:*",
+    "arga-sdk": "^0.1.3",
+    "zod": "^4.1.5"
+  }
+}
