@@ -151,17 +151,21 @@ async function main(): Promise<void> {
 
   // What production is running, from deployment evidence. The workflow refuses to
   // substitute the head of the base branch, so this is not optional.
-  const history = await sourceControl.listCommits(spec.repository, { limit: 2 });
+  // The previously deployed revision is the deployed commit's FIRST PARENT, not the
+  // previous entry in the log — that entry is the feature commit the merge brought
+  // in, and diffing against it is empty.
+  const tip = await sourceControl.listCommits(spec.repository, { limit: 1 });
+  const head = await sourceControl.getCommit(spec.repository, tip[0]!.sha);
   const deployment: DeploymentRecord = {
     id: 'dep-inc-184',
     service: spec.service,
     environment: 'production',
-    commitSha: history[0]!.sha,
-    previousCommitSha: history[1]?.sha ?? null,
+    commitSha: head.sha,
+    previousCommitSha: head.parents[0] ?? null,
     status: 'succeeded',
     startedAt: new Date(Date.parse(spec.deployedAt) - 120_000),
     deployedAt: new Date(spec.deployedAt),
-    author: history[0]!.authorName,
+    author: head.authorName,
     repositoryFullName: spec.repository,
   };
   console.log(`  Deployed rev  ${deployment.commitSha.slice(0, 12)} (from the deployment record, not the branch head)\n`);

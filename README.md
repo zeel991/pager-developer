@@ -129,16 +129,20 @@ shaped this.
 
 ## Known limitations
 
-- **The live model path is implemented but unverified here.** `ANTHROPIC_API_KEY` is
-  empty in this checkout, so no run has yet exercised a real model end to end. The
-  deterministic guards around it are tested; the model's own judgement is not. The
-  agent evaluation reports those scenarios as SKIPPED, never as passing.
+- **Five live-model runs is not a reliability measurement.** `pnpm eval:agent --
+  --repeat 3` passed 5/5 (three repair runs, one abstention, one deterministic
+  sabotage) against `claude-opus-5` on 2026-09-13. That demonstrates the behaviour;
+  it does not measure its rate, and the evaluation says so in its own caveats.
 - **Hosted Arga twins are authenticated but not provisionable**: the account's monthly
   free-plan validation-run quota is exhausted (observed 2026-09-13, `pnpm preflight
   -- --probe-provision`). Every run in this repository therefore uses the local twin,
   and each report states that explicitly.
-- **Two live-model scenarios is not a reliability measurement.** The evaluation says
-  so in its own caveats.
+- **The merge and the recovery in `pnpm demo:workflow` are simulated** by the demo
+  script, and labelled `SIMULATED` in its output. The recovery *verdict* is real — it
+  is computed from those series by the same `RecoveryVerifier` that would read a real
+  Datadog — but the series themselves are written by the script.
+- **`lint` and `build` are reported as not run** for the demo service, which defines
+  no such scripts. They are recorded as unmeasured and never counted as passing.
 - **Lemma is on hold.** Instrumentation records locally; no agent behavioural
   evaluations run.
 - **The hosted Arga GitHub twin cannot compute diffs**, which is why the local twin

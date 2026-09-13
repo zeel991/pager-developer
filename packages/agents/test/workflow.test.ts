@@ -90,17 +90,18 @@ async function build(fixture: Parameters<typeof seedFromFixture>[0], generator: 
   // deployed commit IS the current head, but the workflow is never told that — it is
   // handed the record and reads the sha off it.
   const sourceControl = new GitHubProvider({ baseUrl: e.github, tokenProvider: () => tokens.token() });
-  const history = await sourceControl.listCommits(fixture.repository, { limit: 2 });
+  const tip = await sourceControl.listCommits(fixture.repository, { limit: 1 });
+  const head = await sourceControl.getCommit(fixture.repository, tip[0]!.sha);
   const deployment: DeploymentRecord = {
     id: `dep-${fixture.id}`,
     service: fixture.service,
     environment: 'production',
-    commitSha: history[0]!.sha,
-    previousCommitSha: history[1]?.sha ?? null,
+    commitSha: head.sha,
+    previousCommitSha: head.parents[0] ?? null,
     status: 'succeeded',
     startedAt: new Date(Date.parse(fixture.deployedAt) - 120_000),
     deployedAt: new Date(fixture.deployedAt),
-    author: history[0]!.authorName,
+    author: head.authorName,
     repositoryFullName: fixture.repository,
   };
 

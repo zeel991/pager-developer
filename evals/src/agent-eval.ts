@@ -144,15 +144,21 @@ async function deploymentFor(
   sourceControl: SourceControlProvider,
   fixture: AgentScenario['fixture'],
 ): Promise<DeploymentRecord> {
-  const history = await sourceControl.listCommits(fixture.repository, { limit: 2 });
-  const head = history[0];
-  if (!head) throw new Error(`No commits in ${fixture.repository}; cannot establish a deployed revision.`);
+  const history = await sourceControl.listCommits(fixture.repository, { limit: 1 });
+  const tip = history[0];
+  if (!tip) throw new Error(`No commits in ${fixture.repository}; cannot establish a deployed revision.`);
+
+  // The revision this deployment REPLACED is the deployed commit's first parent —
+  // the prior state of the branch production tracks. The previous entry in the
+  // commit log is the feature commit the merge brought in, and diffing against that
+  // yields nothing, which would silently hand the investigator an empty diff.
+  const head = await sourceControl.getCommit(fixture.repository, tip.sha);
   return {
     id: `dep-${fixture.id}`,
     service: fixture.service,
     environment: 'production',
     commitSha: head.sha,
-    previousCommitSha: history[1]?.sha ?? null,
+    previousCommitSha: head.parents[0] ?? null,
     status: 'succeeded',
     startedAt: new Date(Date.parse(fixture.deployedAt) - 120_000),
     deployedAt: new Date(fixture.deployedAt),

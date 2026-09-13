@@ -76,17 +76,18 @@ async function harness(generator: PatchGenerator) {
     patchGenerator: generator,
   });
 
-  const history = await sourceControl.listCommits(INC_001.repository, { limit: 2 });
+  const tip = await sourceControl.listCommits(INC_001.repository, { limit: 1 });
+  const head = await sourceControl.getCommit(INC_001.repository, tip[0]!.sha);
   const deployment: DeploymentRecord = {
     id: 'dep-guard',
     service: INC_001.service,
     environment: 'production',
-    commitSha: history[0]!.sha,
-    previousCommitSha: history[1]?.sha ?? null,
+    commitSha: head.sha,
+    previousCommitSha: head.parents[0] ?? null,
     status: 'succeeded',
     startedAt: new Date('2026-09-13T14:29:00Z'),
     deployedAt: new Date('2026-09-13T14:31:00Z'),
-    author: history[0]!.authorName,
+    author: head.authorName,
     repositoryFullName: INC_001.repository,
   };
 
