@@ -108,14 +108,32 @@ const CONTAINER_ROOTS = [
   '/home/node/app/',
   '/workspace/',
   '/srv/app/',
+  // Render puts the checkout of the repository here, so a frame reads
+  // /opt/render/project/src/<repo path>. Observed on a real deployment.
+  '/opt/render/project/src/',
 ];
 
-/** Strip a repository-relative path out of an absolute runtime path. */
+/**
+ * Strip a repository-relative path out of an absolute runtime path.
+ *
+ * Node emits `file://` URLs in stack frames for ES modules, so the scheme is
+ * removed before the container root is matched. Without that the whole path falls
+ * through unchanged and every downstream file read misses — which looks like "the
+ * file does not exist at this revision" rather than "we failed to parse the frame".
+ */
 export function toRepositoryPath(file: string): string {
-  for (const root of CONTAINER_ROOTS) {
-    if (file.startsWith(root)) return file.slice(root.length);
+  let path = file;
+  if (path.startsWith('file://')) {
+    try {
+      path = decodeURIComponent(new URL(path).pathname);
+    } catch {
+      path = path.slice('file://'.length);
+    }
   }
-  return file.replace(/^\/+/, '');
+  for (const root of CONTAINER_ROOTS) {
+    if (path.startsWith(root)) return path.slice(root.length);
+  }
+  return path.replace(/^\/+/, '');
 }
 
 /**

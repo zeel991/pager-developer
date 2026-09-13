@@ -168,3 +168,41 @@ describe('novelty', () => {
     expect(assessNovelty(clusterErrors([log()])[0]!, []).novel).toBe(true);
   });
 });
+
+/**
+ * Frame shapes observed on real deployments.
+ *
+ * Each of these was seen in production telemetry and, before being handled,
+ * produced a path that matched no file in the repository — which reads downstream
+ * as "the file is not there" rather than "the frame was not understood".
+ */
+describe('toRepositoryPath on real runtimes', () => {
+  it('handles a Render container root behind a file:// URL', () => {
+    expect(
+      toRepositoryPath('file:///opt/render/project/src/src/checkout/service.ts'),
+    ).toBe('src/checkout/service.ts');
+  });
+
+  it('handles a Render container root without a scheme', () => {
+    expect(toRepositoryPath('/opt/render/project/src/src/checkout/service.ts')).toBe(
+      'src/checkout/service.ts',
+    );
+  });
+
+  it('still handles the container roots it already knew', () => {
+    expect(toRepositoryPath('/app/src/checkout/service.ts')).toBe('src/checkout/service.ts');
+    expect(toRepositoryPath('/var/task/handler.js')).toBe('handler.js');
+  });
+
+  it('parses a real Render stack frame end to end', () => {
+    const frames = parseStackTrace(
+      `TypeError: Cannot read properties of undefined (reading 'percentOff')\n` +
+        `    at CheckoutService.createOrder (file:///opt/render/project/src/src/checkout/service.ts:22:60)\n` +
+        `    at Server.<anonymous> (file:///opt/render/project/src/src/server.ts:48:24)`,
+    );
+    expect(frames).toHaveLength(2);
+    expect(frames[0]!.isDependency).toBe(false);
+    expect(toRepositoryPath(frames[0]!.file)).toBe('src/checkout/service.ts');
+    expect(frames[0]!.line).toBe(22);
+  });
+});
