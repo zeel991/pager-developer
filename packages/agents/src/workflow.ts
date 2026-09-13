@@ -24,7 +24,7 @@ import {
   type ValidationRun,
 } from '@pager/sandbox';
 import { ProductionWatcher, describeAlert, type ProductionAlert } from './production-watcher.js';
-import { toRepositoryPath } from './log-analysis.js';
+import { firstSentences, toRepositoryPath } from './log-analysis.js';
 import {
   NoPatchGenerator,
   type PatchContext,
@@ -1306,20 +1306,15 @@ export class IncidentWorkflow {
     findings: NonNullable<InvestigationResult['findings']>,
     revision: DeployedRevision,
     issue: { key: string; url: string } | null,
-    thread: { id: string; channel: string },
+    _thread: { id: string; channel: string },
   ): string {
     return [
-      `${incidentKey}: no repair was attempted, deliberately.`,
+      `*${incidentKey}: no repair attempted — deliberately.*`,
       ``,
-      `*What the evidence shows*  ${findings.diagnosis}`,
-      `*Attribution*  ${findings.attribution.verdict} — ${findings.attribution.rationale}`,
-      `*Why no patch*  ${findings.decision.reason}`,
-      `*Still unknown*  ${findings.uncertainty}`,
-      ``,
-      `Deployed revision investigated: \`${revision.sha}\` (${revision.source.replace('_', ' ')}).`,
-      `Cited observations: ${findings.evidence.length}.`,
-      issue ? `Ticket: ${issue.key} — ${issue.url}` : '',
-      `Thread: ${thread.channel}`,
+      `*Why*  ${firstSentences(findings.decision.reason, 2)}`,
+      `*Attribution*  ${findings.attribution.verdict}`,
+      `*Revision*  \`${revision.sha.slice(0, 12)}\` · ${findings.evidence.length} cited observation(s)`,
+      issue ? `*Ticket*  ${issue.key} — ${issue.url}` : '',
       ``,
       `No branch, no pull request, no production change.`,
     ]
@@ -1538,10 +1533,10 @@ export class IncidentWorkflow {
       '',
       findings
         ? [
-            `*Diagnosis*  ${findings.diagnosis}`,
-            `*Attribution*  ${findings.attribution.verdict}`,
-            `*Confidence*  ${findings.confidence.toFixed(2)} — _a model's conclusion from ${findings.evidence.length} cited observation(s), not a verified fact_`,
-            `*Unknown*  ${findings.uncertainty}`,
+            `*Diagnosis*  ${firstSentences(findings.diagnosis, 2)}`,
+            `*Attribution*  ${findings.attribution.verdict} · confidence ${findings.confidence.toFixed(2)} ` +
+              `— _a model's conclusion from ${findings.evidence.length} observation(s), not a verified fact_`,
+            `_Full reasoning and what it could not establish are in the pull request._`,
           ].join('\n')
         : 'This does not match a documented failure mode.',
       '',

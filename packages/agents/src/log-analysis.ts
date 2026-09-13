@@ -277,3 +277,19 @@ export function assessNovelty(
     reason: 'No documented failure mode matches this error signature.',
   };
 }
+
+/**
+ * The first few sentences of a long passage.
+ *
+ * Slack is a notification surface, not a report: a wall of model prose in a busy
+ * incident channel is skimmed past, and the detail it contains is then effectively
+ * lost. The full reasoning belongs in the pull request, where a reviewer is already
+ * reading carefully. Truncation is marked, never silent — a reader must be able to
+ * tell they are seeing part of something.
+ */
+export function firstSentences(text: string, count: number): string {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  const sentences = trimmed.match(/[^.!?]+[.!?]+(\s|$)/g);
+  if (!sentences || sentences.length <= count) return trimmed;
+  return `${sentences.slice(0, count).join('').trim()} …`;
+}

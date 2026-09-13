@@ -5,6 +5,7 @@ import {
   clusterErrors,
   errorSignature,
   errorType,
+  firstSentences,
   parseStackTrace,
   toRepositoryPath,
 } from '../src/log-analysis.js';
@@ -296,5 +297,26 @@ describe('clustering ignores entries that describe no failure', () => {
     // Absence of a stack is not absence of information.
     const log = { ...accessLog(), message: 'Upstream refused the connection' };
     expect(clusterErrors([log])).toHaveLength(1);
+  });
+});
+
+describe('firstSentences', () => {
+  it('keeps short text whole', () => {
+    expect(firstSentences('One sentence only.', 2)).toBe('One sentence only.');
+  });
+
+  it('truncates long prose and marks that it did', () => {
+    // Silent truncation is the failure mode: a reader must be able to tell they
+    // are seeing part of something.
+    const out = firstSentences('First. Second. Third. Fourth.', 2);
+    expect(out).toBe('First. Second. …');
+  });
+
+  it('collapses the newlines model prose is full of', () => {
+    expect(firstSentences('A.\n\n   B.\nC.', 2)).toBe('A. B. …');
+  });
+
+  it('does not choke on text with no sentence endings', () => {
+    expect(firstSentences('no punctuation here', 2)).toBe('no punctuation here');
   });
 });
