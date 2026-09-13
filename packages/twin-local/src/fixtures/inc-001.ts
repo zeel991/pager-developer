@@ -36,7 +36,7 @@ export interface OrderRequest {
 }
 `;
 
-const SERVICE_BEFORE = `import type { OrderRequest } from './types.js';
+const SERVICE_BEFORE = `import type { OrderRequest } from './types.ts';
 
 export interface Order {
   customerId: string;
@@ -72,8 +72,9 @@ export class CheckoutService {
 // failing line is unchanged, and only the contract around it moved.
 const SERVICE_AFTER = SERVICE_BEFORE;
 
-const EXISTING_TEST = `import { describe, expect, it } from 'vitest';
-import { CheckoutService } from '../src/checkout/service.js';
+const EXISTING_TEST = `import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { CheckoutService } from '../src/checkout/service.ts';
 
 describe('CheckoutService', () => {
   const service = new CheckoutService();
@@ -84,10 +85,10 @@ describe('CheckoutService', () => {
       items: [{ sku: 'A', quantity: 2, unitPriceCents: 1000 }],
       discountCode: { value: 'SAVE10', percentOff: 10 },
     });
-    expect(order.subtotalCents).toBe(2000);
-    expect(order.discountCents).toBe(200);
-    expect(order.totalCents).toBe(1800);
-    expect(order.appliedCode).toBe('SAVE10');
+    assert.equal(order.subtotalCents, 2000);
+    assert.equal(order.discountCents, 200);
+    assert.equal(order.totalCents, 1800);
+    assert.equal(order.appliedCode, 'SAVE10');
   });
 
   it('sums multiple line items', () => {
@@ -99,8 +100,8 @@ describe('CheckoutService', () => {
       ],
       discountCode: { value: 'SAVE20', percentOff: 20 },
     });
-    expect(order.subtotalCents).toBe(1250);
-    expect(order.totalCents).toBe(1000);
+    assert.equal(order.subtotalCents, 1250);
+    assert.equal(order.totalCents, 1000);
   });
 });
 `;
@@ -110,14 +111,8 @@ const PACKAGE_JSON = `{
   "version": "1.4.2",
   "type": "module",
   "scripts": {
-    "test": "vitest run",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.json"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "test": "node --test",
+    "typecheck": "node --experimental-strip-types --check src/checkout/service.ts"
   }
 }
 `;
@@ -133,13 +128,6 @@ const TSCONFIG = `{
   },
   "include": ["src", "test"]
 }
-`;
-
-const VITEST_CONFIG = `import { defineConfig } from 'vitest/config';
-
-export default defineConfig({
-  test: { include: ['test/**/*.test.ts'], environment: 'node' },
-});
 `;
 
 const STACK_TRACE = `TypeError: Cannot read properties of null (reading 'percentOff')
@@ -165,7 +153,6 @@ export const INC_001: ScenarioFixture = {
       changes: [
         { path: 'package.json', content: PACKAGE_JSON },
         { path: 'tsconfig.json', content: TSCONFIG },
-        { path: 'vitest.config.ts', content: VITEST_CONFIG },
         { path: 'src/checkout/types.ts', content: TYPES_BEFORE },
         { path: 'src/checkout/service.ts', content: SERVICE_BEFORE },
         { path: 'test/checkout.test.ts', content: EXISTING_TEST },

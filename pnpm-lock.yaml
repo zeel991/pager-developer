@@ -283,6 +283,19 @@ importers:
         specifier: ^4.1.5
         version: 4.6.2
 
+  packages/sandbox:
+    dependencies:
+      '@pager/core':
+        specifier: workspace:*
+        version: link:../core
+      '@pager/providers':
+        specifier: workspace:*
+        version: link:../providers
+    devDependencies:
+      '@pager/twin-local':
+        specifier: workspace:*
+        version: link:../twin-local
+
   packages/twin-local:
     dependencies:
       '@pager/core':

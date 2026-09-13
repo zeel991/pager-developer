@@ -300,6 +300,33 @@ export function githubRoutes(): Route[] {
       },
     },
     {
+      // Commit-addressed, unlike the hosted twin — a sandbox must be able to
+      // materialise the exact revision production was running.
+      method: 'GET',
+      pattern: /^\/repos\/([^/]+)\/([^/]+)\/git\/trees\/([^/]+)$/,
+      handler: (ctx) => {
+        if (!isAuthenticated(ctx.state, ctx.headers)) return UNAUTHENTICATED;
+        const repo = findRepo(ctx.state, ctx.params[0]!, ctx.params[1]!);
+        if (!repo) return { status: 404, body: { message: 'Not Found' } };
+        const commit = findCommit(repo, ctx.params[2]!);
+        if (!commit) return { status: 404, body: { message: 'Not Found' } };
+        return {
+          status: 200,
+          body: {
+            sha: commit.sha,
+            truncated: false,
+            tree: [...commit.files].map(([path, content]) => ({
+              path,
+              mode: '100644',
+              type: 'blob',
+              sha: blobSha(content),
+              size: content.length,
+            })),
+          },
+        };
+      },
+    },
+    {
       method: 'GET',
       pattern: /^\/repos\/([^/]+)\/([^/]+)\/contents\/(.*)$/,
       handler: (ctx) => {

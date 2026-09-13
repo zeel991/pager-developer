@@ -262,6 +262,13 @@ export class GitHubProvider implements SourceControlProvider {
       : res.content;
   }
 
+  async listFiles(repo: string, ref: string): Promise<string[]> {
+    const res = await this.http.getOptional<GhTreeResponse>(`/repos/${repo}/git/trees/${ref}`, {
+      recursive: 1,
+    });
+    return (res?.tree ?? []).filter((e) => e.type === 'blob').map((e) => e.path).sort();
+  }
+
   async createBranch(repo: string, fromSha: string, name: string): Promise<Branch> {
     const res = await this.http.post<{ ref: string; object: { sha: string } }>(
       `/repos/${repo}/git/refs`,

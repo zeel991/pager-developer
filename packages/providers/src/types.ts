@@ -51,6 +51,8 @@ export interface SourceControlProvider {
   getPullRequest(repo: string, number: number): Promise<PullRequest>;
   listPullRequestsForCommit(repo: string, sha: string): Promise<PullRequest[]>;
   getFile(repo: string, ref: string, path: string): Promise<string | null>;
+  /** Every file path present at a revision. Used to materialise a sandbox. */
+  listFiles(repo: string, ref: string): Promise<string[]>;
   createBranch(repo: string, fromSha: string, name: string): Promise<Branch>;
   createPullRequest(repo: string, input: CreatePullRequestInput): Promise<PullRequest>;
   /** Clone URL for the reproduction sandbox. May embed a twin credential. */
