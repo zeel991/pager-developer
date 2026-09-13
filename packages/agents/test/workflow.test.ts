@@ -16,6 +16,7 @@ import { INC_001, INC_009, INC_011, LocalTwinServer, seedFromFixture } from '@pa
 import {
   IncidentWorkflow,
   TELEMETRY_WINDOW_MINUTES,
+  pullRequestTitle,
   telemetryWindowsFor,
 } from '../src/workflow.js';
 import { NoPatchGenerator, ScriptedPatchGenerator } from '../src/patch-generator.js';
@@ -263,5 +264,34 @@ describe('telemetry windows', () => {
     const [baseline] = telemetryWindowsFor(onset);
     const minutes = (baseline.to.getTime() - baseline.from.getTime()) / 60_000;
     expect(Math.round(minutes)).toBe(TELEMETRY_WINDOW_MINUTES);
+  });
+});
+
+describe('pull request title', () => {
+  it('keeps a short root cause whole', () => {
+    expect(pullRequestTitle('INC-1', 'Guard the optional discount code.')).toBe(
+      'INC-1: Guard the optional discount code',
+    );
+  });
+
+  it('truncates a long one at a word boundary and marks it', () => {
+    // Real titles were hundreds of characters — unreadable in any PR list.
+    const long =
+      'CheckoutService.createOrder dereferenced an optional request.destination and the ' +
+      'result of rateFor(), whose declared return type falsely excluded undefined, so ' +
+      'requests with no destination threw raw TypeErrors';
+    const title = pullRequestTitle('INC-BE5404871B81', long);
+    expect(title.length).toBeLessThanOrEqual(72);
+    expect(title.endsWith('…')).toBe(true);
+    expect(title).toMatch(/^INC-BE5404871B81: /);
+    // The real property: the kept text is a whole-word prefix of the original,
+    // so no word is cut in half.
+    const kept = title.replace(/^INC-BE5404871B81: /, '').replace('…', '');
+    expect(long.startsWith(kept)).toBe(true);
+    expect(long[kept.length]).toBe(' ');
+  });
+
+  it('collapses the newlines model prose arrives with', () => {
+    expect(pullRequestTitle('INC-2', 'Guard  the\n\n  code.')).toBe('INC-2: Guard the code');
   });
 });

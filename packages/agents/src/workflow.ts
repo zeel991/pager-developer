@@ -759,7 +759,7 @@ export class IncidentWorkflow {
         );
         const { value } = await ctx.tool('github.createPullRequest', { repo: input.repository }, () =>
           this.deps.sourceControl.createPullRequest(input.repository, {
-            title: `${incidentKey}: ${patch.rootCause}`,
+            title: pullRequestTitle(incidentKey, patch.rootCause),
             body: this.pullRequestBody({
               incidentKey,
               alert,
@@ -1595,7 +1595,17 @@ export class IncidentWorkflow {
       ? `**${args.modelUsage?.model ?? 'a reasoning model'}**, via Pager Developer`
       : `**${args.patch.kind}** (not a model)`;
 
+    const ran0 = args.validation.filter((v) => !v.skipped);
     return [
+      // A reviewer decides from this block alone whether to keep reading.
+      `> **${args.patch.rootCause.trim().replace(/\s+/g, ' ')}**\n>\n` +
+        `> Reproduced: \`${args.reproduction.command}\` exited **${args.reproduction.beforeFix.exitCode}** before the patch ` +
+        `and **${args.reproduction.afterFix?.exitCode ?? 'n/a'}** after it.\n>\n` +
+        `> Checks: ${ran0.map((v) => `${v.kind} ${v.passed ? '✅' : '❌'}`).join(' · ') || 'none ran'}` +
+        `${args.validation.some((v) => v.skipped) ? ` · not run: ${args.validation.filter((v) => v.skipped).map((v) => v.kind).join(', ')}` : ''}\n>\n` +
+        `> Authored by ${args.patch.kind === 'model' ? `\`${args.modelUsage?.model ?? 'a model'}\`` : args.patch.kind}. ` +
+        `**Merging is a human decision.**`,
+
       `## Incident\n${args.incidentKey} — ${args.alert.service}` +
         (args.issue ? `\nTicket: ${args.issue.key} — ${args.issue.url}` : '') +
         `\nSlack: \`${args.slackChannel}\` (thread ${args.slackThreadTs})`,
@@ -1611,11 +1621,13 @@ export class IncidentWorkflow {
       `## Root cause\n${args.patch.rootCause}`,
 
       args.findings
-        ? `## Diagnosis — model conclusion\n${args.findings.diagnosis}\n\n` +
+        ? `## Diagnosis — model conclusion\n\n` +
+          `<details><summary>Full reasoning (${args.findings.diagnosis.split(/\s+/).length} words)</summary>\n\n${args.findings.diagnosis}\n\n</details>\n\n` +
           `**Attribution** ${args.findings.attribution.verdict} — ${args.findings.attribution.rationale}\n\n` +
           `**Known unknowns** ${args.findings.uncertainty}\n\n` +
-          `**Cited observations** (each is a tool call the tracer recorded)\n` +
-          args.findings.evidence.map((e) => `- \`${e.toolCallId}\` — ${e.shows}`).join('\n')
+          `<details><summary>Cited observations (${args.findings.evidence.length}) — each is a tool call the tracer recorded</summary>\n\n` +
+          args.findings.evidence.map((e) => `- \`${e.toolCallId.slice(0, 8)}\` — ${e.shows}`).join('\n') +
+          `\n\n</details>`
         : `## Diagnosis\nNo model investigation was available for this incident.`,
 
       `## Evidence — observed\n- Datadog monitor "${args.alert.monitor.name}" alerting\n` +
@@ -1723,6 +1735,26 @@ function severityFor(occurrences: number): 'SEV1' | 'SEV2' | 'SEV3' | 'SEV4' {
   if (occurrences >= 5) return 'SEV2';
   if (occurrences >= 2) return 'SEV3';
   return 'SEV4';
+}
+
+/**
+ * A pull request title: short enough to read in a list.
+ *
+ * A root cause is a sentence and sometimes a paragraph; using it whole produced
+ * titles hundreds of characters long that were unreadable anywhere GitHub shows a
+ * list. The full statement is the first thing in the body, so nothing is lost —
+ * this is only the label.
+ */
+export function pullRequestTitle(incidentKey: string, rootCause: string): string {
+  const prefix = `${incidentKey}: `;
+  const budget = 72 - prefix.length;
+  const flat = rootCause.trim().replace(/\s+/g, ' ').replace(/[.\s]+$/, '');
+  if (flat.length <= budget) return prefix + flat;
+
+  // Cut at a word boundary, never mid-word, and mark that it was cut.
+  const cut = flat.slice(0, budget - 1);
+  const at = cut.lastIndexOf(' ');
+  return `${prefix}${(at > budget * 0.5 ? cut.slice(0, at) : cut).replace(/[,;:]$/, '')}…`;
 }
 
 /** A check's outcome, stating plainly when it did not run. */
