@@ -1,0 +1,24 @@
+{
+  "name": "@pager/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --env-file-if-exists=../../.env --experimental-strip-types --watch src/main.ts",
+    "start": "node --env-file-if-exists=../../.env --experimental-strip-types src/main.ts",
+    "seed": "node --env-file-if-exists=../../.env --experimental-strip-types src/seed.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@pager/agents": "workspace:*",
+    "@pager/core": "workspace:*",
+    "@pager/db": "workspace:*",
+    "@pager/observability": "workspace:*",
+    "@pager/providers": "workspace:*",
+    "@pager/twin-local": "workspace:*",
+    "fastify": "^5.6.0",
+    "zod": "^4.1.5"
+  }
+}
