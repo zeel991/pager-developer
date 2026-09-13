@@ -280,6 +280,16 @@ importers:
         specifier: ^4.1.5
         version: 4.6.2
 
+  packages/twin-local:
+    dependencies:
+      '@pager/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@pager/providers':
+        specifier: workspace:*
+        version: link:../providers
+
 packages:
 
   '@drizzle-team/brocli@0.10.2':
