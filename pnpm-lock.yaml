@@ -206,6 +206,9 @@ importers:
       '@pager/providers':
         specifier: workspace:*
         version: link:../packages/providers
+      '@pager/twin-local':
+        specifier: workspace:*
+        version: link:../packages/twin-local
       arga-sdk:
         specifier: ^0.1.3
         version: 0.1.3

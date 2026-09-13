@@ -87,7 +87,9 @@ describe('DeploymentObserver', () => {
     const r = await obs.observe(deployment);
 
     expect(r.baselineWindow.from.toISOString()).toBe('2026-09-13T14:01:00.000Z');
-    expect(r.baselineWindow.to.toISOString()).toBe('2026-09-13T14:31:00.000Z');
+    // Half-open: the baseline stops just before the deploy so the first
+    // post-deployment sample cannot be averaged into it.
+    expect(r.baselineWindow.to.toISOString()).toBe('2026-09-13T14:30:59.999Z');
     expect(r.observationWindow.from.toISOString()).toBe('2026-09-13T14:31:00.000Z');
     expect(r.observationWindow.to.toISOString()).toBe('2026-09-13T15:01:00.000Z');
   });

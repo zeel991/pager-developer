@@ -76,6 +76,21 @@ export type Deployment = z.infer<typeof Deployment>;
 export const DEFAULT_BASELINE_MINUTES = 30;
 export const DEFAULT_OBSERVATION_MINUTES = 30;
 
+/**
+ * The windows either side of a deployment.
+ *
+ * The two windows must not share the deployment instant. Providers generally treat
+ * a time range as inclusive at both ends, so a baseline ending exactly at `t` picks
+ * up the first post-deployment sample and averages it into the "before" figure.
+ *
+ * That is not cosmetic. With a 30-minute baseline at one sample per minute, a single
+ * contaminated sample moved a seeded 0.4% error rate to 0.98% — inflating the
+ * baseline by 2.4x and understating the regression. In the other direction, on a
+ * short window or a large spike, it can manufacture a regression that did not happen.
+ *
+ * So the baseline is half-open: it ends one millisecond before the deployment, and
+ * the observation window owns the deployment instant onward.
+ */
 export function deriveWindows(
   deployedAt: Date,
   opts: { baselineMinutes?: number; observationMinutes?: number } = {},
@@ -84,7 +99,7 @@ export function deriveWindows(
   const observation = opts.observationMinutes ?? DEFAULT_OBSERVATION_MINUTES;
   const t = deployedAt.getTime();
   return {
-    before: { from: new Date(t - baseline * 60_000), to: new Date(t) },
+    before: { from: new Date(t - baseline * 60_000), to: new Date(t - 1) },
     after: { from: new Date(t), to: new Date(t + observation * 60_000) },
   };
 }

@@ -19,7 +19,8 @@
     "dev": "pnpm --parallel --filter './apps/**' dev",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
     "preflight": "pnpm --filter @pager/evals preflight",
-    "demo:phase1": "pnpm --filter @pager/evals phase1"
+    "demo:phase1": "pnpm --filter @pager/evals phase1",
+    "demo:local": "pnpm --filter @pager/evals local"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
