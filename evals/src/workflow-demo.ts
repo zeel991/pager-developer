@@ -105,6 +105,17 @@ async function main(): Promise<void> {
   const sourceControl = new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() });
   const knowledge = new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' });
 
+  // Slack is the one adapter that can point at a REAL workspace here, because it is
+  // the only one whose real side effect is a message a person reads rather than a
+  // branch, a ticket or telemetry. Selected once, from configuration — nothing
+  // downstream knows or asks which it holds.
+  const slackIsReal =
+    process.env.PAGER_MESSAGING_BACKEND === 'real' && Boolean(process.env.SLACK_BOT_TOKEN);
+  const slackChannel = process.env.PAGER_SLACK_CHANNEL ?? '#incidents';
+  const messaging = slackIsReal
+    ? new SlackProvider({ baseUrl: 'https://slack.com', token: process.env.SLACK_BOT_TOKEN! })
+    : new SlackProvider({ baseUrl: endpoints.slack });
+
   // Authorship: a real model if one is configured, a fixture otherwise. Never both,
   // and never silently.
   const availability = describeModelAvailability();
@@ -133,7 +144,7 @@ async function main(): Promise<void> {
   const workflow = new IncidentWorkflow({
     observability,
     sourceControl,
-    messaging: new SlackProvider({ baseUrl: endpoints.slack }),
+    messaging,
     issueTracker: new JiraProvider({ baseUrl: endpoints.jira, projectKey: 'INC', siteUrl: 'https://acme.atlassian.net' }),
     knowledge,
     email: new ResendProvider({ baseUrl: endpoints.resend, apiKey: 're_test', from: 'pager@acme.dev' }),
@@ -145,7 +156,10 @@ async function main(): Promise<void> {
   });
 
   rule('Pager Developer — full incident workflow (local twins)');
-  console.log(`  Connections   github/datadog/slack/jira/notion → LOCAL twins on 127.0.0.1`);
+  console.log(
+    `  Connections   github/datadog/jira/notion → LOCAL twins on 127.0.0.1\n` +
+      `                slack → ${slackIsReal ? `REAL workspace, channel ${slackChannel}` : 'LOCAL twin'}`,
+  );
   console.log(`  Model         ${availability.available ? `${availability.model} (LIVE)` : `none — ${availability.reason}`}`);
   console.log(`  Authorship    ${model ? 'model-authored regression test and patch' : 'SCRIPTED fixture, no reasoning happened'}`);
 
@@ -173,7 +187,7 @@ async function main(): Promise<void> {
   const result = await workflow.run({
     service: spec.service,
     repository: spec.repository,
-    slackChannel: '#incidents',
+    slackChannel,
     incidentKey: 'INC-184',
     teamEmails: ['payments-team@acme.dev'],
     deployment,
@@ -213,6 +227,19 @@ async function main(): Promise<void> {
 
   if (result.haltReason) {
     rule(`Halted: ${result.haltReason}`);
+    await server.stop();
+    return;
+  }
+
+  if (slackIsReal) {
+    rule('Stopping here — this run posted to a real Slack channel');
+    console.log('  The remaining steps of this demo SIMULATE a human merging the pull request');
+    console.log('  and production recovering. Against a real channel that would post a');
+    console.log('  "resolved" message for a merge that never happened, which is precisely the');
+    console.log('  kind of claim this system exists not to make. The incident stands where a');
+    console.log('  real one would: a pull request open, awaiting a human.\n');
+    console.log(`  Posted to ${slackChannel}: opening message + in-thread fix-ready reply.`);
+    console.log(`  Patch authored by: ${result.patch?.kind.toUpperCase() ?? 'n/a'}\n`);
     await server.stop();
     return;
   }
