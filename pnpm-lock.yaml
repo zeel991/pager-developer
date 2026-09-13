@@ -192,6 +192,24 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.4)(supports-color@7.2.0)(tsx@4.23.13)
 
+  packages/agents:
+    dependencies:
+      '@pager/core':
+        specifier: workspace:*
+        version: link:../core
+      '@pager/db':
+        specifier: workspace:*
+        version: link:../db
+      '@pager/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@pager/providers':
+        specifier: workspace:*
+        version: link:../providers
+      zod:
+        specifier: ^4.1.5
+        version: 4.6.2
+
   packages/core:
     dependencies:
       zod:
