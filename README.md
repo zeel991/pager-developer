@@ -6,13 +6,6 @@
   and hands a human a reviewable pull request with the evidence attached.
 </p>
 
-<p align="center">
-  <a href="docs/demo.mp4"><b>Watch the 2-minute demo</b></a> ·
-  <a href="https://pager-developer-worker.onrender.com"><b>Live dashboard</b></a> ·
-  <a href="https://github.com/he11world/test/pull/12"><b>A pull request it opened</b></a> ·
-  <a href="#the-loop-end-to-end">The loop</a>
-</p>
-
 ---
 
 Production breaks at 3 AM. Someone gets paged, reads a stack trace half-awake, finds
