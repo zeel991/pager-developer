@@ -172,9 +172,33 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   // 2. One incident per deployed revision. A monitor stays red for as long as the
   //    bug is live, and an agent that re-opened a pull request on every poll would
   //    be indistinguishable from a denial of service against its own reviewers.
+  //
+  //    The in-memory set is only a fast path. The durable record is the fix branch
+  //    itself: its name is derived from the revision, so asking whether it exists
+  //    asks the repository — which survives the restarts this process does not.
+  //    Without that, every redeploy re-opens a pull request for a bug that already
+  //    has one, and we observed exactly that: three pull requests for one defect.
+  const incidentKey = `INC-${deployment.commitSha.slice(0, 12).toUpperCase()}`;
+  const fixBranch = `pager/${incidentKey.toLowerCase()}`;
+
   if (handled.has(deployment.commitSha)) {
     status.lastOutcome = `already handled ${deployment.commitSha.slice(0, 12)}`;
     log(`watching ${config.service} at ${deployment.commitSha.slice(0, 12)} — already handled`);
+    return;
+  }
+
+  const existing = await sourceControl.getBranch(config.repository, fixBranch).catch(() => null);
+  if (existing) {
+    // A human may have closed that pull request without merging. Treating the branch
+    // as done is deliberate: re-opening something a person has already seen and
+    // decided about is worse than staying quiet. A new deployment changes the
+    // revision, which changes the branch, and the incident can open again.
+    handled.add(deployment.commitSha);
+    status.handledRevisions = [...handled];
+    status.lastOutcome =
+      `${fixBranch} already exists — a fix for ${deployment.commitSha.slice(0, 12)} was ` +
+      `already prepared, by this process or an earlier one`;
+    log(`watching ${config.service} at ${deployment.commitSha.slice(0, 12)} — ${fixBranch} already exists`);
     return;
   }
 
@@ -203,6 +227,9 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
     baseBranch: config.baseBranch,
     slackChannel: config.slackChannel,
     deployment,
+    // Derived from the revision, so the branch this produces is the durable record
+    // that stops a restart re-opening the same pull request.
+    incidentKey,
   });
 
   if (!result.alert) {

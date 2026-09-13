@@ -242,3 +242,38 @@ describe('GitHubProvider diff fallbacks', () => {
     expect(prs[0]!.number).toBe(1);
   });
 });
+
+/**
+ * Branch lookup.
+ *
+ * Added because a deployed watcher restarted and opened a third pull request for a
+ * defect that already had two: its memory of what it had done did not survive the
+ * process. A deterministically-named branch is a record that lives in the
+ * repository, which outlives any process, so "has this already been worked" becomes
+ * a question with a durable answer.
+ */
+describe('GitHubProvider.getBranch', () => {
+  it('returns the branch when the ref exists', async () => {
+    const { fetchImpl, seen } = stubFetch([
+      (u) =>
+        u.includes('/git/ref/heads/pager/inc-be5404871b81')
+          ? { body: { ref: 'refs/heads/pager/inc-be5404871b81', object: { sha: 'f00ba4', type: 'commit' } } }
+          : undefined,
+    ]);
+    const gh = new GitHubProvider({ baseUrl: 'https://api.github.com', token: 't', fetchImpl });
+
+    const branch = await gh.getBranch('acme/checkout-api', 'pager/inc-be5404871b81');
+    expect(branch).not.toBeNull();
+    expect(branch!.name).toBe('pager/inc-be5404871b81');
+    expect(branch!.sha).toBe('f00ba4');
+    expect(seen[0]).toContain('/git/ref/heads/pager/inc-be5404871b81');
+  });
+
+  it('returns null for a ref that does not exist, rather than throwing', async () => {
+    // Absence is the expected answer most of the time — a caller should not need
+    // try/catch for control flow.
+    const { fetchImpl } = stubFetch([]);
+    const gh = new GitHubProvider({ baseUrl: 'https://api.github.com', token: 't', fetchImpl });
+    expect(await gh.getBranch('acme/checkout-api', 'pager/never-created')).toBeNull();
+  });
+});

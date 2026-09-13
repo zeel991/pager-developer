@@ -286,6 +286,13 @@ export class GitHubProvider implements SourceControlProvider {
     return { name: res.ref.replace(/^refs\/heads\//, ''), sha: res.object.sha };
   }
 
+  async getBranch(repo: string, name: string): Promise<Branch | null> {
+    const res = await this.http.getOptional<{ ref: string; object: { sha: string } }>(
+      `/repos/${repo}/git/ref/heads/${name}`,
+    );
+    return res ? { name: res.ref.replace(/^refs\/heads\//, ''), sha: res.object.sha } : null;
+  }
+
   async createPullRequest(repo: string, input: CreatePullRequestInput): Promise<PullRequest> {
     const res = await this.http.post<GhPullRequest>(`/repos/${repo}/pulls`, {
       title: input.title,

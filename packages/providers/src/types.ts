@@ -61,6 +61,14 @@ export interface SourceControlProvider {
   /** Every file path present at a revision. Used to materialise a sandbox. */
   listFiles(repo: string, ref: string): Promise<string[]>;
   createBranch(repo: string, fromSha: string, name: string): Promise<Branch>;
+  /**
+   * A branch, or null when it does not exist.
+   *
+   * Exists so a caller can ask whether work for something has already been started
+   * without depending on its own memory. A process that restarts forgets what it
+   * did; the repository does not.
+   */
+  getBranch(repo: string, name: string): Promise<Branch | null>;
   createPullRequest(repo: string, input: CreatePullRequestInput): Promise<PullRequest>;
   /** Commit a set of file changes onto a branch. `null` content deletes a file. */
   commitFiles(repo: string, input: CommitFilesInput): Promise<Commit>;
