@@ -46,11 +46,14 @@ export class DeploymentObserver {
   async observe(
     deployment: DeploymentRecord,
     opts: ObserveOptions = {},
+    /** Called with the agent run id, for callers that must link the run later. */
+    onRunStarted?: (agentRunId: string) => void,
   ): Promise<ReconstructedDeployment> {
     return this.tracer.run(
       'DeploymentObserver',
       { input: { deploymentId: deployment.id, service: deployment.service } },
       async (ctx) => {
+        onRunStarted?.(ctx.agentRunId);
         const gaps: string[] = [];
         const repo = deployment.repositoryFullName;
 

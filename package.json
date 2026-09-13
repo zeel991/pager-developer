@@ -21,7 +21,8 @@
     "preflight": "pnpm --filter @pager/evals preflight",
     "demo:phase1": "pnpm --filter @pager/evals phase1",
     "demo:local": "pnpm --filter @pager/evals local",
-    "eval": "pnpm --filter @pager/evals eval"
+    "eval": "pnpm --filter @pager/evals eval",
+    "demo:pipeline": "pnpm --filter @pager/evals incident"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

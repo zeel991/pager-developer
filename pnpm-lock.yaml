@@ -200,12 +200,18 @@ importers:
       '@pager/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@pager/db':
+        specifier: workspace:*
+        version: link:../packages/db
       '@pager/observability':
         specifier: workspace:*
         version: link:../packages/observability
       '@pager/providers':
         specifier: workspace:*
         version: link:../packages/providers
+      '@pager/sandbox':
+        specifier: workspace:*
+        version: link:../packages/sandbox
       '@pager/twin-local':
         specifier: workspace:*
         version: link:../packages/twin-local

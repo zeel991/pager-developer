@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { Database } from './client.js';
 import {
   agentRuns,
@@ -195,6 +195,27 @@ export class AuditRepository {
 
 export class AgentRunRepository {
   constructor(private readonly db: Database) {}
+
+  /**
+   * Attach already-finished runs to an incident.
+   *
+   * Detection necessarily happens before an incident exists, so the observer and
+   * detector runs start with a null incident id. They are the runs that produced the
+   * incident, and an incident page that omitted them would hide the evidence trail
+   * that opened it — so they are linked once the incident has an id. Tool calls are
+   * relinked too, since evidence cites them.
+   */
+  async attachToIncident(runIds: string[], incidentId: string): Promise<void> {
+    if (runIds.length === 0) return;
+    await this.db
+      .update(agentRuns)
+      .set({ incidentId })
+      .where(and(inArray(agentRuns.id, runIds), isNull(agentRuns.incidentId)));
+    await this.db
+      .update(toolCalls)
+      .set({ incidentId })
+      .where(and(inArray(toolCalls.agentRunId, runIds), isNull(toolCalls.incidentId)));
+  }
 
   async forIncident(incidentId: string): Promise<(typeof agentRuns.$inferSelect)[]> {
     return this.db

@@ -5,3 +5,4 @@ export * from './incident-engine.js';
 export * from './communication.js';
 export * from './approval.js';
 export * from './recovery.js';
+export * from './orchestrator.js';

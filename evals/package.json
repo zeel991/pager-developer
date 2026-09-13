@@ -10,7 +10,8 @@
     "provision": "node --env-file-if-exists=../.env --experimental-strip-types src/provision.ts",
     "phase1": "node --env-file-if-exists=../.env --experimental-strip-types src/phase1-demo.ts",
     "local": "node --env-file-if-exists=../.env --experimental-strip-types src/local-demo.ts",
-    "eval": "node --env-file-if-exists=../.env --experimental-strip-types src/run-evals.ts"
+    "eval": "node --env-file-if-exists=../.env --experimental-strip-types src/run-evals.ts",
+    "incident": "node --env-file-if-exists=../.env --experimental-strip-types src/pipeline-demo.ts"
   },
   "dependencies": {
     "@pager/agents": "workspace:*",
@@ -19,6 +20,8 @@
     "@pager/providers": "workspace:*",
     "arga-sdk": "^0.1.3",
     "zod": "^4.1.5",
-    "@pager/twin-local": "workspace:*"
+    "@pager/twin-local": "workspace:*",
+    "@pager/db": "workspace:*",
+    "@pager/sandbox": "workspace:*"
   }
 }
