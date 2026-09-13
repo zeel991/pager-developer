@@ -40,6 +40,13 @@ const log = (message: string): void => {
   console.log(`${new Date().toISOString()}  ${message}`);
 };
 
+/** Record where the agent is. Visible on the dashboard within 15 seconds. */
+const enter = (stage: Stage, detail: string | null = null): void => {
+  status.stage = stage;
+  status.stageLog.push({ stage, at: new Date().toISOString(), detail });
+  log(`  [${stage}] ${detail ?? STAGE_LABELS[stage]}`);
+};
+
 /**
  * What the worker has seen and done, exposed over HTTP.
  *
@@ -85,8 +92,49 @@ interface IncidentRecord {
   failedToolCalls: number;
 }
 
+/**
+ * Where the agent is, right now.
+ *
+ * A watcher that only reports "busy" tells an observer nothing about whether it is
+ * reading logs or running a test suite, and an investigation takes minutes. Each
+ * stage is stamped as it is entered so the dashboard shows progress rather than a
+ * spinner — and so a run that stalls shows WHERE it stalled.
+ */
+export type Stage =
+  | 'idle'
+  | 'reading_deployed_revision'
+  | 'checking_monitors'
+  | 'investigating'
+  | 'reproducing'
+  | 'patching'
+  | 'validating'
+  | 'opening_pull_request'
+  | 'done';
+
+export const STAGE_LABELS: Record<Stage, string> = {
+  idle: 'Watching production',
+  reading_deployed_revision: 'Asking the service what revision it runs',
+  checking_monitors: 'Checking Datadog monitors and logs',
+  investigating: 'Investigating — reading logs, code and the deployment diff',
+  reproducing: 'Writing a regression test and running it against the deployed code',
+  patching: 'Writing the patch',
+  validating: 'Running the repository’s own checks',
+  opening_pull_request: 'Opening a pull request for review',
+  done: 'Handed off to a human',
+};
+
+interface StageEvent {
+  stage: Stage;
+  at: string;
+  detail: string | null;
+}
+
 interface WorkerStatus {
   startedAt: string;
+  /** Where the current or most recent run got to. */
+  stage: Stage;
+  /** Every stage this run entered, in order. Cleared when a new run starts. */
+  stageLog: StageEvent[];
   lastTickAt: string | null;
   lastOutcome: string | null;
   ticks: number;
@@ -111,6 +159,8 @@ interface WorkerStatus {
 
 const status: WorkerStatus = {
   startedAt: new Date().toISOString(),
+  stage: 'idle',
+  stageLog: [],
   lastTickAt: null,
   lastOutcome: null,
   ticks: 0,
@@ -162,13 +212,16 @@ function serveStatus(port: number, config: WorkerConfig, sourceControl: SourceCo
 
 async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
   const startedTick = Date.now();
+  status.stageLog = [];
+  enter('reading_deployed_revision');
   // 1. Ask the service what it is running. Everything downstream depends on this
   //    being observed rather than assumed, so a failure here ends the tick.
   const probe = await probeDeployedRevision(config.healthUrl);
   if (!probe.sha) {
-    log(`skip: ${probe.problem}`);
+    enter('idle', `Skipped: ${probe.problem}`);
     return;
   }
+  enter('checking_monitors', `Production is running ${probe.sha.slice(0, 12)}`);
 
   const sink = new InMemorySink();
   const tracer = new AgentTracer({ sink, lemma: lemmaFromEnv() });
@@ -244,7 +297,24 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
     autonomy: config.readOnly ? 'L2' : 'L3',
   });
 
+  // The workflow reports its own stages back as it moves through them, so the
+  // dashboard follows the run rather than guessing from elapsed time.
   const result = await workflow.run({
+    onStage: (name: string, summary: string) => {
+      const map: Record<string, Stage> = {
+        identified: 'investigating',
+        ticket_opened: 'investigating',
+        team_notified: 'investigating',
+        reproducing: 'reproducing',
+        patching: 'patching',
+        validating: 'validating',
+        pr_opened: 'opening_pull_request',
+        awaiting_merge: 'done',
+        halted: 'done',
+      };
+      const stage = map[name];
+      if (stage) enter(stage, summary.slice(0, 160));
+    },
     service: config.service,
     repository: config.repository,
     baseBranch: config.baseBranch,
@@ -312,6 +382,7 @@ async function tick(config: WorkerConfig, handled: Set<string>): Promise<void> {
     failedToolCalls: sink.failedToolCalls().length,
   });
   status.lastOutcome = result.pullRequest ? `opened ${result.pullRequest.url}` : result.stage;
+  enter('done', result.pullRequest ? `Opened ${result.pullRequest.url}` : (result.haltReason ?? result.stage).slice(0, 160));
 
   // Offer the merge to a person, in the channel where they are already reading about
   // the incident. The button carries one pull request in one repository; it is not a
@@ -405,6 +476,7 @@ async function main(): Promise<void> {
     } finally {
       status.busy = false;
       status.busySince = null;
+      if (status.stage !== 'done') enter('idle');
     }
     await new Promise((resolve) => setTimeout(resolve, config.intervalSeconds * 1000));
   }

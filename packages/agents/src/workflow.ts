@@ -198,6 +198,14 @@ export interface WorkflowInput {
   teamEmails?: string[];
   incidentKey?: string;
   sandboxRoot?: string;
+  /**
+   * Called as each stage is entered.
+   *
+   * An incident takes minutes, and a caller that only learns the outcome cannot
+   * show progress or say where a stalled run stopped. Failures here are swallowed:
+   * an observer must never be able to break the incident it is watching.
+   */
+  onStage?: (stage: WorkflowStage, summary: string) => void;
 }
 
 /**
@@ -297,6 +305,11 @@ export class IncidentWorkflow {
     const step = (stage: WorkflowStage, summary: string, detail?: Record<string, unknown>): void => {
       result.stage = stage;
       steps.push({ stage, at: new Date(), summary, ...(detail ? { detail } : {}) });
+      try {
+        input.onStage?.(stage, summary);
+      } catch {
+        // An observer must never be able to break the incident it is watching.
+      }
     };
 
     /**

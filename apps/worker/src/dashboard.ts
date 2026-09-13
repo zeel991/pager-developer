@@ -17,6 +17,8 @@
 
 interface Renderable {
   startedAt: string;
+  stage: string;
+  stageLog: { stage: string; at: string; detail: string | null }[];
   lastTickAt: string | null;
   lastOutcome: string | null;
   ticks: number;
@@ -109,15 +111,50 @@ h1 span { color:#6e7681; font-weight:400; }
 .sect h3 { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#6e7681; margin:0 0 5px; font-weight:600; }
 .prose { color:#adbac7; white-space:pre-wrap; font-size:12px; }
 .pass { color:#3fb950; } .fail { color:#f85149; } .skip { color:#6e7681; }
+.stage { padding:3px 0; }
+.stagedetail { color:#6e7681; font-size:11px; margin:1px 0 4px 14px; }
+.busytxt { color:#d29922; }
 .empty { padding:28px 14px; text-align:center; color:#6e7681; font-size:12px; }
 .note { color:#6e7681; font-size:11px; margin-top:6px; }
 code { background:#161b22; padding:1px 5px; border-radius:3px; color:#adbac7; }
 `;
 
 export function renderDashboard(s: Renderable): string {
+  const LABELS: Record<string, string> = {
+    idle: 'Watching production',
+    reading_deployed_revision: 'Asking the service what revision it runs',
+    checking_monitors: 'Checking Datadog monitors and logs',
+    investigating: 'Investigating — logs, code, deployment diff',
+    reproducing: 'Writing a regression test and running it',
+    patching: 'Writing the patch',
+    validating: 'Running the repository’s own checks',
+    opening_pull_request: 'Opening a pull request',
+    done: 'Handed off to a human',
+  };
+  const ORDER = ['reading_deployed_revision','checking_monitors','investigating','reproducing','patching','validating','opening_pull_request','done'];
+
   const state = s.busy
-    ? `<span class="pill busy">INVESTIGATING</span>`
+    ? `<span class="pill busy">${esc(LABELS[s.stage] ?? s.stage).toUpperCase()}</span>`
     : `<span class="pill live">WATCHING</span>`;
+
+  const seen = new Map(s.stageLog.map((e) => [e.stage, e]));
+  const pipeline = `
+  <div class="panel">
+    <div class="phead"><strong>This run</strong>
+      <span class="k" style="margin-left:auto">${s.busy ? 'in progress' : 'last completed run'}</span></div>
+    <div class="pbody">
+      ${ORDER.map((st) => {
+        const hit = seen.get(st);
+        const active = s.busy && s.stage === st;
+        const mark = hit ? (active ? '▶' : '✓') : '·';
+        const cls = active ? 'busytxt' : hit ? 'pass' : 'skip';
+        return `<div class="stage"><span class="${cls}">${mark}</span>
+          <span class="${hit ? 'v' : 'skip'}">${esc(LABELS[st] ?? st)}</span>
+          ${hit?.detail ? `<div class="stagedetail">${esc(hit.detail)}</div>` : ''}</div>`;
+      }).join('')}
+      ${s.stageLog.length === 0 ? '<div class="skip">No run yet since this process started.</div>' : ''}
+    </div>
+  </div>`;
 
   const cfg = s.config;
 
@@ -215,6 +252,8 @@ export function renderDashboard(s: Renderable): string {
     <div><div class="k">incidents handled</div><div class="v">${s.incidents.length}</div></div>
     <div style="flex:1 1 260px"><div class="k">last outcome</div><div class="v">${esc(s.lastOutcome ?? (s.busy ? 'first check in progress' : 'no check has completed yet'))}</div></div>
   </div>
+
+  ${pipeline}
 
   ${s.approvals.length > 0 ? `
   <div class="panel">
