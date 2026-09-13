@@ -31,6 +31,42 @@ pnpm --filter @pager/web dev   # dashboard on http://127.0.0.1:4100
 
 `pnpm verify` runs typecheck, lint, tests and build. It must pass before any commit.
 
+### Running it live
+
+The demo can point at real infrastructure, one adapter at a time, chosen from
+configuration. Every run prints which of its connections are real and which are
+twins, because that distinction is the whole claim:
+
+```bash
+# Real Datadog + real Slack + real model; repository on the twin.
+PAGER_SLACK_CHANNEL='#your-channel' pnpm demo:workflow
+```
+
+Requires in `.env`: `ANTHROPIC_API_KEY`, `SLACK_BOT_TOKEN` with
+`PAGER_MESSAGING_BACKEND=real`, and `DATADOG_API_KEY` + `DATADOG_APP_KEY` with
+`PAGER_OBSERVABILITY_BACKEND=real`.
+
+Check what a real Datadog account actually holds before relying on it:
+
+```bash
+pnpm probe:datadog <service>
+```
+
+It reads monitors, error logs and metrics and reports each as FOUND or ABSENT. Two
+credentials are needed and they are not interchangeable: an API key can ship
+telemetry *into* Datadog, but every endpoint Pager reads needs an **application
+key** as well.
+
+Three things must be true before a live incident is possible, and the probe names
+whichever is missing: a monitor **tagged** `service:<name>` in ALERT, error-level
+logs for that service, and a stack trace on them. Metrics are not required —
+`ProductionWatcher` reads monitors and logs only.
+
+When Slack is real the demo stops at `awaiting_merge`. The rest of that script
+simulates a human merging and production recovering, and posting a "resolved"
+message into a channel people read, for a merge that never happened, is exactly
+the claim this system exists not to make.
+
 ### Turning the reasoning model on
 
 Set `ANTHROPIC_API_KEY` in `.env` (`PAGER_MODEL` defaults to `claude-opus-5`). Then
