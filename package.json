@@ -25,7 +25,8 @@
     "api": "pnpm --filter @pager/api start",
     "api:seed": "pnpm --filter @pager/api seed",
     "demo:workflow": "pnpm --filter @pager/evals workflow",
-    "demo:repo": "cd demo/checkout-api && node --test"
+    "demo:repo": "cd demo/checkout-api && node --test",
+    "eval:agent": "pnpm --filter @pager/evals eval:agent"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

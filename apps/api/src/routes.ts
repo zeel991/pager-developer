@@ -8,7 +8,9 @@ import {
   AuditRepository,
   DeploymentRepository,
   EvidenceRepository,
+  FixRepository,
   IncidentRepository,
+  InvestigationRepository,
   TimelineRepository,
   deploymentCommits,
   deploymentFiles,
@@ -42,6 +44,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const agentRuns = new AgentRunRepository(db);
   const audit = new AuditRepository(db);
   const deploymentRepo = new DeploymentRepository(db);
+  const investigations = new InvestigationRepository(db);
+  const fixes = new FixRepository(db);
 
   app.get('/health', async () => ({ status: 'ok', at: new Date().toISOString() }));
 
@@ -129,6 +133,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       agentRuns: runsWithCalls,
       auditLog: await audit.forIncident(incident.id),
       telemetry: snapshots,
+      // What was inferred, kept separate from what was observed. The incident page
+      // renders them differently, so a reader can always tell a model's conclusion
+      // from a reading.
+      investigations: await investigations.forIncident(incident.id),
+      hypotheses: await investigations.hypothesesForIncident(incident.id),
+      // The proposed fix, with the exit codes of every check that really ran.
+      fixes: await fixes.forIncident(incident.id),
     };
   });
 

@@ -117,6 +117,62 @@ export interface TelemetrySnapshot {
   points: { at: string; value: number }[];
 }
 
+/** A model's conclusion. Never rendered as though it were an observation. */
+export interface InvestigationRow {
+  id: string;
+  suspectedRootCause: string | null;
+  deploymentAttribution: string;
+  attributionRationale: string | null;
+  confidence: number;
+  nextActions: string[];
+  createdAt: string;
+}
+
+export interface HypothesisRow {
+  id: string;
+  status: string;
+  description: string;
+  confidence: number | null;
+  rank: number;
+}
+
+/** A check that really ran, with the exit code of the process that ran it. */
+export interface ValidationRunRow {
+  id: string;
+  kind: string;
+  command: string;
+  exitCode: number;
+  passed: boolean;
+  testsPassed: number | null;
+  testsFailed: number | null;
+  durationMs: number;
+}
+
+export interface ReproductionRow {
+  id: string;
+  command: string;
+  environmentDescription: string;
+  beforeFixExitCode: number | null;
+  beforeFixPassed: boolean | null;
+  afterFixExitCode: number | null;
+  afterFixPassed: boolean | null;
+}
+
+export interface FixCandidateRow {
+  id: string;
+  branch: string;
+  rootCause: string;
+  explanation: string;
+  risks: string[];
+  rollbackPlan: string;
+  confidence: number;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  files: { path: string }[];
+  validation: ValidationRunRow[];
+  reproduction: ReproductionRow | null;
+}
+
 export interface IncidentDetail {
   incident: IncidentRow & { serviceId: string; suspectedDeploymentId: string | null; slackThreadTs: string | null };
   service: { id: string; name: string; ownerTeam: string | null } | null;
@@ -132,4 +188,7 @@ export interface IncidentDetail {
   agentRuns: AgentRunRow[];
   auditLog: { id: string; actor: string; action: string; allowed: boolean; denialReason: string | null; at: string }[];
   telemetry: TelemetrySnapshot[];
+  investigations: InvestigationRow[];
+  hypotheses: HypothesisRow[];
+  fixes: FixCandidateRow[];
 }

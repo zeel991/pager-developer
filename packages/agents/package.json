@@ -16,12 +16,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
     "@pager/core": "workspace:*",
     "@pager/db": "workspace:*",
     "@pager/observability": "workspace:*",
     "@pager/providers": "workspace:*",
-    "zod": "^4.1.5",
-    "@pager/sandbox": "workspace:*"
+    "@pager/sandbox": "workspace:*",
+    "zod": "^4.1.5"
   },
   "devDependencies": {
     "@pager/twin-local": "workspace:*"

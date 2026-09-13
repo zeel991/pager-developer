@@ -56,7 +56,14 @@ describe('checkout regression', () => {
 `;
 
 export interface SeedScript {
-  regressionTest?: { path: string; source: string; rationale?: string };
+  regressionTest?: {
+    path: string;
+    source: string;
+    rationale?: string;
+    /** Text the runner must really print when this test fails unpatched. */
+    expectedFailureMarkers?: string[];
+    expectedFailureDescription?: string;
+  };
   patch?: {
     rootCause: string;
     explanation: string;
@@ -69,7 +76,14 @@ export interface SeedScript {
 
 export const SCRIPTS: Record<string, SeedScript> = {
   'INC-001': {
-    regressionTest: { path: 'test/regression-checkout.test.ts', source: REGRESSION_TEST },
+    regressionTest: {
+      path: 'test/regression-checkout.test.ts',
+      source: REGRESSION_TEST,
+      // Text the runner really prints when this fails against the deployed code.
+      // Checked against the actual output; a wrong guess here fails the reproduction.
+      expectedFailureMarkers: ['TypeError', "reading 'percentOff'"],
+      expectedFailureDescription: 'Checkout succeeds when no discount code is supplied.',
+    },
     patch: {
       rootCause:
         'createOrder dereferenced request.discountCode without a null check after PR #377 ' +

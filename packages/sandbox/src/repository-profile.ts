@@ -146,3 +146,31 @@ export async function profileRepository(sandbox: Sandbox): Promise<RepositoryPro
     gaps,
   };
 }
+
+/**
+ * A command that runs one test file, rather than the whole suite.
+ *
+ * Reproduction must isolate the new regression test: if it runs alongside a suite
+ * that contains an unrelated broken test, a non-zero exit proves nothing about the
+ * assertion being demonstrated. Returns null when the runner cannot be targeted, and
+ * callers must then record that the reproduction was not isolated rather than
+ * pretending it was.
+ */
+export function singleTestCommand(profile: RepositoryProfile, testPath: string): string | null {
+  const script = profile.testCommand;
+  if (!script) return null;
+
+  // Resolve `pnpm run test` back to the underlying runner, since a package script
+  // cannot be given a path argument reliably across managers.
+  const scriptName = /\brun\s+(\S+)$/.exec(script)?.[1];
+  const underlying = scriptName ? profile.scripts[scriptName] : script;
+  if (!underlying) return null;
+
+  const trimmed = underlying.trim();
+  if (/^node\s+--test\b/.test(trimmed)) return `${trimmed} ${testPath}`;
+  if (/^(npx\s+)?vitest\b/.test(trimmed)) {
+    return /\brun\b/.test(trimmed) ? `${trimmed} ${testPath}` : `${trimmed} run ${testPath}`;
+  }
+  if (/^(npx\s+)?jest\b/.test(trimmed)) return `${trimmed} ${testPath}`;
+  return null;
+}

@@ -10,12 +10,16 @@ would trust this at 3 AM.
 
 ## Quick start
 
-Nothing below needs credentials or network access.
+Everything below runs without credentials or network access, against local twins.
+A reasoning model is optional: without one the system still detects, files, notifies,
+reproduces and hands off — it simply never claims to have diagnosed anything.
 
 ```bash
 pnpm install
 
-pnpm eval             # evaluation suite across three scenarios
+pnpm preflight        # what is reachable: model, Arga twins, Lemma
+pnpm eval             # detection suite (deterministic)
+pnpm eval:agent       # investigation + repair suite; writes a JSON report
 pnpm demo:workflow    # the full incident workflow, alert to team email
 pnpm demo:local       # observe + detect, printed to the terminal
 pnpm demo:repo        # run the demo service's own test suite
@@ -27,21 +31,48 @@ pnpm --filter @pager/web dev   # dashboard on http://127.0.0.1:4100
 
 `pnpm verify` runs typecheck, lint, tests and build. It must pass before any commit.
 
+### Turning the reasoning model on
+
+Set `ANTHROPIC_API_KEY` in `.env` (`PAGER_MODEL` defaults to `claude-opus-5`). Then
+`pnpm eval:agent`, `pnpm demo:workflow` and `pnpm api:seed` all switch from a scripted
+fixture to real model-authored work, and say so in their output. Nothing else changes:
+the reproduction gate, the check suite and the human merge gate are identical either
+way, because they are the parts that must not depend on what wrote the patch.
+
+Live-model evaluation scenarios are **skipped, not passed**, when no key is present,
+and the JSON report records them as unverified.
+
 ## What works today
 
 | Phase | State |
 | --- | --- |
 | 1 — Connect & observe | Done. Verified against real Arga twins and the local twin |
 | 2 — Detect regressions | Done |
-| 3 — Investigate | **Not built.** Needs a reasoning model |
+| 3 — Investigate | Done. Bounded read-tool loop over Datadog, GitHub and Notion, with schema-validated, citation-checked findings |
 | 4 — Communicate | Templates, evidence gate and Slack delivery done |
-| 5 — Fix & verify | Deterministic half done. Patch generation needs a model |
+| 5 — Fix & verify | Done. Model-authored regression test and patch, proven by exit codes, with one bounded repair attempt |
 | 6 — Approve & recover | Policy, approval and recovery verification done |
 
 The deterministic spine is complete: an incident can be detected, opened, persisted,
 communicated, reproduced in a sandbox, verified with real test runs, gated by policy
-and checked for recovery. What is missing is the judgement in the middle — deciding
-*why* production broke and *what* patch to write.
+and checked for recovery. The judgement in the middle — *why* production broke and
+*what* patch to write — is supplied by a model, through a seam narrow enough that
+every one of those guarantees still holds around it.
+
+Three rules govern that seam:
+
+- **The deployed revision is established, never assumed.** The workflow reads what
+  production is running from deployment evidence and refuses to substitute the head
+  of the base branch. A patch validated against a tree that is not the failing one
+  proves nothing, so the workflow halts instead.
+- **A non-zero exit code is not a reproduction.** The regression test must be new,
+  must run in isolation where the runner allows it, must produce a failing assertion
+  rather than a load error, and must print text the author predicted. A syntax error,
+  a missing module, a broken command or a suite that was already red are each refused
+  by name.
+- **A patch may not touch its own evidence.** A patch naming the regression test path
+  is rejected — twice, once by the generator and again by the layer that writes to
+  disk.
 
 ## The three properties this rests on
 
@@ -98,9 +129,16 @@ shaped this.
 
 ## Known limitations
 
-- **No reasoning model is configured**, so Phase 3 and patch generation are absent.
-  Attribution accuracy, root-cause accuracy and communication accuracy are reported by
-  the evaluation suite as explicitly unmeasured rather than counted as passing.
+- **The live model path is implemented but unverified here.** `ANTHROPIC_API_KEY` is
+  empty in this checkout, so no run has yet exercised a real model end to end. The
+  deterministic guards around it are tested; the model's own judgement is not. The
+  agent evaluation reports those scenarios as SKIPPED, never as passing.
+- **Hosted Arga twins are authenticated but not provisionable**: the account's monthly
+  free-plan validation-run quota is exhausted (observed 2026-09-13, `pnpm preflight
+  -- --probe-provision`). Every run in this repository therefore uses the local twin,
+  and each report states that explicitly.
+- **Two live-model scenarios is not a reliability measurement.** The evaluation says
+  so in its own caveats.
 - **Lemma is on hold.** Instrumentation records locally; no agent behavioural
   evaluations run.
 - **The hosted Arga GitHub twin cannot compute diffs**, which is why the local twin

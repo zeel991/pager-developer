@@ -8,10 +8,16 @@ import {
   deploymentPullRequests,
   deployments,
   evidence,
+  fixCandidateFiles,
+  fixCandidates,
+  hypotheses,
   incidentEvents,
   incidents,
+  investigations,
+  reproductions,
   telemetrySnapshots,
   toolCalls,
+  validationRuns,
 } from './schema.js';
 
 /**
@@ -28,6 +34,10 @@ export type IncidentRow = typeof incidents.$inferSelect;
 export type IncidentEventRow = typeof incidentEvents.$inferSelect;
 export type EvidenceRow = typeof evidence.$inferSelect;
 export type DeploymentRow = typeof deployments.$inferSelect;
+export type InvestigationRow = typeof investigations.$inferSelect;
+export type FixCandidateRow = typeof fixCandidates.$inferSelect;
+export type ValidationRunRow = typeof validationRuns.$inferSelect;
+export type ReproductionRow = typeof reproductions.$inferSelect;
 
 export class IncidentRepository {
   constructor(private readonly db: Database) {}
@@ -231,5 +241,181 @@ export class AgentRunRepository {
       .from(toolCalls)
       .where(eq(toolCalls.agentRunId, agentRunId))
       .orderBy(asc(toolCalls.startedAt));
+  }
+}
+
+
+/**
+ * What the reasoning step concluded, and what supported it.
+ *
+ * Separate from Evidence on purpose. Evidence is what was observed; an investigation
+ * is what was inferred from it, and the incident page renders the two differently so
+ * a reader can always tell a reading from a conclusion.
+ */
+export class InvestigationRepository {
+  constructor(private readonly db: Database) {}
+
+  async record(input: {
+    incidentId: string;
+    agentRunId?: string | null;
+    suspectedRootCause: string | null;
+    deploymentAttribution: InvestigationRow['deploymentAttribution'];
+    attributionRationale: string | null;
+    confidence: number;
+    nextActions: string[];
+    /** Ranked statements, with the uncertainty carried as one of them. */
+    hypotheses?: { description: string; confidence: number | null; status: 'HYPOTHESIS' | 'OBSERVATION' | 'FACT' }[];
+  }): Promise<InvestigationRow> {
+    const [row] = await this.db
+      .insert(investigations)
+      .values({
+        incidentId: input.incidentId,
+        // Only set when the run is one this database actually holds, so a foreign
+        // key never fails on a run the tracer wrote elsewhere.
+        ...(input.agentRunId ? { agentRunId: input.agentRunId } : {}),
+        suspectedRootCause: input.suspectedRootCause,
+        deploymentAttribution: input.deploymentAttribution,
+        attributionRationale: input.attributionRationale,
+        confidence: input.confidence,
+        nextActions: input.nextActions,
+      })
+      .returning();
+
+    for (const [index, h] of (input.hypotheses ?? []).entries()) {
+      await this.db.insert(hypotheses).values({
+        investigationId: row!.id,
+        incidentId: input.incidentId,
+        status: h.status,
+        description: h.description,
+        confidence: h.confidence,
+        rank: index,
+      });
+    }
+    return row!;
+  }
+
+  async forIncident(incidentId: string): Promise<InvestigationRow[]> {
+    return this.db
+      .select()
+      .from(investigations)
+      .where(eq(investigations.incidentId, incidentId))
+      .orderBy(asc(investigations.createdAt));
+  }
+
+  async hypothesesForIncident(incidentId: string): Promise<(typeof hypotheses.$inferSelect)[]> {
+    return this.db
+      .select()
+      .from(hypotheses)
+      .where(eq(hypotheses.incidentId, incidentId))
+      .orderBy(asc(hypotheses.rank));
+  }
+}
+
+/**
+ * The proposed fix, its reproduction, and every check that really ran.
+ *
+ * `validationRuns` carries an exit code from a real process. This table is the
+ * answer to "did the agent actually run the checks it claims", and it is the reason
+ * the incident page can show before-and-after rather than an assertion.
+ */
+export class FixRepository {
+  constructor(private readonly db: Database) {}
+
+  async record(input: {
+    incidentId: string;
+    repositoryId: string;
+    branch: string;
+    commitSha: string | null;
+    rootCause: string;
+    explanation: string;
+    risks: string[];
+    rollbackPlan: string;
+    confidence: number;
+    pullRequestNumber: number | null;
+    pullRequestUrl: string | null;
+    files: { path: string }[];
+    reproduction: {
+      command: string;
+      environmentDescription: string;
+      beforeFixExitCode: number | null;
+      beforeFixPassed: boolean | null;
+      afterFixExitCode: number | null;
+      afterFixPassed: boolean | null;
+      beforeFixOutput: string | null;
+      afterFixOutput: string | null;
+    } | null;
+    /** Only checks that RAN. A skipped check is not recorded as a run. */
+    validation: {
+      kind: string;
+      command: string;
+      exitCode: number;
+      passed: boolean;
+      testsPassed: number | null;
+      testsFailed: number | null;
+      durationMs: number;
+      output: string;
+    }[];
+  }): Promise<FixCandidateRow> {
+    let reproductionId: string | null = null;
+    if (input.reproduction) {
+      const [row] = await this.db.insert(reproductions).values({
+        incidentId: input.incidentId,
+        ...input.reproduction,
+      }).returning();
+      reproductionId = row!.id;
+    }
+
+    const [fix] = await this.db
+      .insert(fixCandidates)
+      .values({
+        incidentId: input.incidentId,
+        repositoryId: input.repositoryId,
+        branch: input.branch,
+        commitSha: input.commitSha,
+        rootCause: input.rootCause,
+        explanation: input.explanation,
+        risks: input.risks,
+        rollbackPlan: input.rollbackPlan,
+        confidence: input.confidence,
+        pullRequestNumber: input.pullRequestNumber,
+        pullRequestUrl: input.pullRequestUrl,
+        ...(reproductionId ? { reproductionId } : {}),
+      })
+      .returning();
+
+    for (const file of input.files) {
+      await this.db.insert(fixCandidateFiles).values({ fixCandidateId: fix!.id, path: file.path });
+    }
+    for (const run of input.validation) {
+      await this.db.insert(validationRuns).values({ fixCandidateId: fix!.id, ...run });
+    }
+    return fix!;
+  }
+
+  async forIncident(incidentId: string): Promise<
+    (FixCandidateRow & {
+      files: (typeof fixCandidateFiles.$inferSelect)[];
+      validation: ValidationRunRow[];
+      reproduction: ReproductionRow | null;
+    })[]
+  > {
+    const rows = await this.db
+      .select()
+      .from(fixCandidates)
+      .where(eq(fixCandidates.incidentId, incidentId))
+      .orderBy(asc(fixCandidates.createdAt));
+
+    return Promise.all(
+      rows.map(async (row) => {
+        const [files, validation, repro] = await Promise.all([
+          this.db.select().from(fixCandidateFiles).where(eq(fixCandidateFiles.fixCandidateId, row.id)),
+          this.db.select().from(validationRuns).where(eq(validationRuns.fixCandidateId, row.id)),
+          row.reproductionId
+            ? this.db.select().from(reproductions).where(eq(reproductions.id, row.reproductionId)).limit(1)
+            : Promise.resolve([]),
+        ]);
+        return { ...row, files, validation, reproduction: repro[0] ?? null };
+      }),
+    );
   }
 }

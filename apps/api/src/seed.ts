@@ -30,14 +30,26 @@ import {
   AuditRepository,
   DrizzleTelemetrySink,
   EvidenceRepository,
+  FixRepository,
   IncidentRepository,
+  InvestigationRepository,
   TelemetryRepository,
   TimelineRepository,
   organizations,
   repositories as reposTable,
   services,
 } from '@pager/db';
-import { IncidentEngine, IncidentWorkflow, ScriptedPatchGenerator } from '@pager/agents';
+import type { DeploymentRecord } from '@pager/providers';
+import {
+  IncidentEngine,
+  IncidentInvestigator,
+  IncidentWorkflow,
+  ModelPatchGenerator,
+  ScriptedPatchGenerator,
+  describeModelAvailability,
+  modelFromEnv,
+  type PatchGenerator,
+} from '@pager/agents';
 import { FIXTURES, LocalTwinServer, fixture, seedFromFixture } from '@pager/twin-local';
 import { DEFAULT_DATABASE_URL, openDatabase } from './db.ts';
 import { SCRIPTS } from './seed-scripts.ts';
@@ -67,7 +79,14 @@ async function main(): Promise<void> {
   const audit = new AuditRepository(handle.db);
   const agentRuns = new AgentRunRepository(handle.db);
   const evidence = new EvidenceRepository(handle.db);
+  const investigationRepo = new InvestigationRepository(handle.db);
+  const fixes = new FixRepository(handle.db);
   const engine = new IncidentEngine(incidents, timeline, audit);
+  const availability = describeModelAvailability();
+  const model = modelFromEnv();
+  console.log(
+    `Model: ${availability.available ? `${availability.model} (LIVE — the dashboard will show model-authored work)` : `none. ${availability.reason} Patches will be SCRIPTED fixtures.`}`,
+  );
   const tracer = new AgentTracer({ sink: new DrizzleTelemetrySink(handle.db), lemma: lemmaFromEnv() });
 
   console.log(`Seeding ${ids.length} scenario(s) into ${url}\n`);
@@ -103,15 +122,30 @@ async function main(): Promise<void> {
       const creds = await registerViaManifest(endpoints.github, PAGER_APP_MANIFEST(endpoints.github));
       const tokens = new GitHubAppTokenSource(endpoints.github, creds);
 
+      const observability = new DatadogProvider({ baseUrl: endpoints.datadog });
+      const sourceControl = new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() });
+      const knowledge = new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' });
+
+      // A real model when one is configured; the scenario's fixture otherwise. The
+      // dashboard shows which, because `kind` travels with every artefact.
+      const patchGenerator: PatchGenerator | null = model
+        ? new ModelPatchGenerator({ model, tracer })
+        : SCRIPTS[id]
+          ? new ScriptedPatchGenerator(SCRIPTS[id]!)
+          : null;
+
       const workflow = new IncidentWorkflow({
-        observability: new DatadogProvider({ baseUrl: endpoints.datadog }),
-        sourceControl: new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() }),
+        observability,
+        sourceControl,
         messaging: new SlackProvider({ baseUrl: endpoints.slack }),
         issueTracker: new JiraProvider({ baseUrl: endpoints.jira, projectKey: 'INC' }),
-        knowledge: new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' }),
+        knowledge,
         email: new ResendProvider({ baseUrl: endpoints.resend, apiKey: 're_seed', from: 'pager@acme.dev' }),
         tracer,
-        ...(SCRIPTS[id] ? { patchGenerator: new ScriptedPatchGenerator(SCRIPTS[id]!) } : {}),
+        ...(patchGenerator ? { patchGenerator } : {}),
+        investigator: model
+          ? new IncidentInvestigator({ model, tracer, providers: { observability, sourceControl, knowledge } })
+          : null,
         persistence: {
           engine,
           evidence,
@@ -119,14 +153,36 @@ async function main(): Promise<void> {
           telemetry: new TelemetryRepository(handle.db),
           organizationId: org!.id,
           serviceId: svc!.id,
+          investigations: investigationRepo,
+          fixes,
+          repositoryId: repo!.id,
         },
       });
+
+      // What production is running, established from deployment evidence. The
+      // workflow refuses to substitute the branch head, so this is required.
+      const history = await sourceControl.listCommits(spec.repository, { limit: 2 });
+      const deployment: DeploymentRecord | null = history[0]
+        ? {
+            id: `dep-${id}`,
+            service: spec.service,
+            environment: 'production',
+            commitSha: history[0].sha,
+            previousCommitSha: history[1]?.sha ?? null,
+            status: 'succeeded',
+            startedAt: new Date(Date.parse(spec.deployedAt) - 120_000),
+            deployedAt: new Date(spec.deployedAt),
+            author: history[0].authorName,
+            repositoryFullName: spec.repository,
+          }
+        : null;
 
       const result = await workflow.run({
         service: spec.service,
         repository: spec.repository,
         slackChannel: '#incidents',
         teamEmails: ['payments-team@acme.dev'],
+        deployment,
       });
 
       if (!result.incident) {

@@ -10,6 +10,7 @@ import {
   SlackProvider,
   registerViaManifest,
 } from '@pager/providers';
+import type { DeploymentRecord } from '@pager/providers';
 import { AgentTracer, InMemorySink } from '@pager/observability';
 import { INC_001, INC_009, INC_011, LocalTwinServer, seedFromFixture } from '@pager/twin-local';
 import {
@@ -60,6 +61,8 @@ async function build(fixture: Parameters<typeof seedFromFixture>[0], generator: 
               generator === 'bad-test'
                 ? `import { it } from 'node:test';\nimport assert from 'node:assert/strict';\nit('trivial', () => assert.ok(true));\n`
                 : REGRESSION_TEST,
+            expectedFailureMarkers: ['TypeError', "reading 'percentOff'"],
+            expectedFailureDescription: 'Checkout succeeds when no discount code is supplied.',
           },
           patch: {
             rootCause: 'createOrder dereferenced an optional field',
@@ -82,7 +85,26 @@ async function build(fixture: Parameters<typeof seedFromFixture>[0], generator: 
     patchGenerator,
   });
 
-  return { workflow, sink, endpoints: e };
+  // The revision production is running, resolved the way the workflow demands it:
+  // from deployment evidence, not from the head of the branch. In this fixture the
+  // deployed commit IS the current head, but the workflow is never told that — it is
+  // handed the record and reads the sha off it.
+  const sourceControl = new GitHubProvider({ baseUrl: e.github, tokenProvider: () => tokens.token() });
+  const history = await sourceControl.listCommits(fixture.repository, { limit: 2 });
+  const deployment: DeploymentRecord = {
+    id: `dep-${fixture.id}`,
+    service: fixture.service,
+    environment: 'production',
+    commitSha: history[0]!.sha,
+    previousCommitSha: history[1]?.sha ?? null,
+    status: 'succeeded',
+    startedAt: new Date(Date.parse(fixture.deployedAt) - 120_000),
+    deployedAt: new Date(fixture.deployedAt),
+    author: history[0]!.authorName,
+    repositoryFullName: fixture.repository,
+  };
+
+  return { workflow, sink, endpoints: e, deployment };
 }
 
 const input = {
@@ -99,8 +121,8 @@ afterEach(async () => {
 
 describe('IncidentWorkflow', () => {
   it('runs alert → ticket → slack → fix → PR', async () => {
-    const { workflow } = await build(INC_001, 'scripted');
-    const result = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_001, 'scripted');
+    const result = await workflow.run({ ...input, deployment });
 
     expect(result.haltReason).toBeNull();
     expect(result.stage).toBe('awaiting_merge');
@@ -117,19 +139,19 @@ describe('IncidentWorkflow', () => {
   });
 
   it('marks the patch as scripted, never as though a model reasoned to it', async () => {
-    const { workflow } = await build(INC_001, 'scripted');
-    const result = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_001, 'scripted');
+    const result = await workflow.run({ ...input, deployment });
     expect(result.patch!.kind).toBe('scripted');
   });
 
   it('stops with the failure located when no patch generator is configured', async () => {
     // The dangerous alternative is guessing a fix, so it does everything else and
     // hands over.
-    const { workflow } = await build(INC_001, 'none');
-    const result = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_001, 'none');
+    const result = await workflow.run({ ...input, deployment });
 
     expect(result.stage).toBe('halted');
-    expect(result.haltReason).toMatch(/No patch generator is configured/);
+    expect(result.haltReason).toMatch(/No regression test could be authored \(generator: none\)/);
     expect(result.haltReason).toMatch(/src\/checkout\/service\.ts:20/);
     // The team was still told and the ticket still filed.
     expect(result.issue).not.toBeNull();
@@ -140,17 +162,17 @@ describe('IncidentWorkflow', () => {
   });
 
   it('refuses to open a PR when the regression test does not exercise the bug', async () => {
-    const { workflow } = await build(INC_001, 'bad-test');
-    const result = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_001, 'bad-test');
+    const result = await workflow.run({ ...input, deployment });
 
     expect(result.stage).toBe('halted');
-    expect(result.haltReason).toMatch(/does not exercise the reported failure/);
+    expect(result.haltReason).toMatch(/passed against the unpatched code/);
     expect(result.pullRequest).toBeNull();
   });
 
   it('does not escalate a documented failure mode', async () => {
-    const { workflow } = await build(INC_009, 'scripted');
-    const result = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_009, 'scripted');
+    const result = await workflow.run({ ...input, deployment });
 
     expect(result.stage).toBe('not_escalated');
     expect(result.issue).toBeNull();
@@ -159,8 +181,8 @@ describe('IncidentWorkflow', () => {
   });
 
   it('does not escalate an alerting monitor with healthy telemetry', async () => {
-    const { workflow } = await build(INC_011, 'scripted');
-    const result = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_011, 'scripted');
+    const result = await workflow.run({ ...input, deployment });
 
     expect(result.stage).toBe('not_escalated');
     expect(result.alert!.rationale).toMatch(/more likely a monitor problem/);
@@ -168,8 +190,8 @@ describe('IncidentWorkflow', () => {
   });
 
   it('will not verify recovery for a pull request that was never merged', async () => {
-    const { workflow } = await build(INC_001, 'scripted');
-    const first = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_001, 'scripted');
+    const first = await workflow.run({ ...input, deployment });
 
     const after = await workflow.completeAfterMerge({
       ...input,
@@ -189,8 +211,8 @@ describe('IncidentWorkflow', () => {
   });
 
   it('keeps the incident open and sends nothing when signals have not recovered', async () => {
-    const { workflow } = await build(INC_001, 'scripted');
-    const first = await workflow.run(input);
+    const { workflow, deployment } = await build(INC_001, 'scripted');
+    const first = await workflow.run({ ...input, deployment });
 
     const repo = server.current.repositories.get('acme/checkout-api')!;
     const pr = repo.pullRequests.find((p) => p.number === first.pullRequest!.number)!;

@@ -12,7 +12,7 @@
  */
 
 import { Lemma } from '@uselemma/tracing';
-import { createArgaClient } from '@pager/providers';
+import { TwinRun, createArgaClient } from '@pager/providers';
 
 const REQUIRED_TWINS = ['github', 'datadog', 'slack'];
 
@@ -52,6 +52,36 @@ async function checkArga(): Promise<void> {
       `arga.twin.${name}`,
       present,
       present ? 'available' : `NOT offered by this account; offered: ${[...available].sort().join(', ')}`,
+    );
+  }
+
+  // A twin being OFFERED is not the same as a twin being PROVISIONABLE. Provisioning
+  // spends a validation run from a monthly quota, so it is only attempted when asked
+  // for — a preflight that silently burns the last run of the month is worse than no
+  // preflight. Without the flag the constraint is stated rather than tested.
+  if (!process.argv.includes('--probe-provision')) {
+    report(
+      'arga.provisioning',
+      true,
+      'not probed — provisioning spends a monthly validation run. Re-run with --probe-provision to test it.',
+    );
+    return;
+  }
+
+  try {
+    // 10 minutes is the free plan's ceiling; anything higher is rejected outright.
+    const run = await TwinRun.provision(client, { twins: ['github'], ttlMinutes: 10 });
+    report(
+      'arga.provisioning',
+      true,
+      `provisioned run ${run.runId} with twins: ${run.twinNames.join(', ')} (ttl 10m)`,
+    );
+  } catch (err) {
+    report(
+      'arga.provisioning',
+      false,
+      `twin run could not be provisioned: ${message(err)}. Twins are offered but not usable ` +
+        `right now; fall back to PAGER_*_BACKEND=local.`,
     );
   }
 }

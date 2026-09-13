@@ -27,6 +27,11 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
   }
 
   const { incident, deployment, timeline, evidence, agentRuns, telemetry, auditLog, service } = data;
+  const investigation = data.investigations.at(-1) ?? null;
+  const fix = data.fixes.at(-1) ?? null;
+  // Authorship travels with the explanation, so the page can say plainly whether a
+  // model wrote this or a fixture supplied it. Neither is presented as the other.
+  const authoredBy = /Authored by:\s*(\w+)/.exec(fix?.explanation ?? '')?.[1] ?? null;
 
   // Pair baseline and observation windows per metric so the change is readable
   // as one row rather than two.
@@ -72,6 +77,135 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div className="space-y-4 xl:col-span-2">
+          {/*
+            Investigation and verification, in that order, because that is the order
+            the claims get stronger: a model's conclusion, then the exit codes that
+            either support it or do not. They are visually distinct for the same
+            reason — one is an inference and the other is an observation.
+          */}
+          {investigation && (
+            <Panel
+              title="Investigation"
+              subtitle="model conclusion — an inference, not an observation"
+              dense
+            >
+              <div className="space-y-2 px-3 py-2">
+                <p className="text-[12px] leading-snug text-muted">{investigation.suspectedRootCause}</p>
+                <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-[11px]">
+                  <span className="text-dim">
+                    attribution <span className="text-muted">{investigation.deploymentAttribution}</span>
+                  </span>
+                  <span className="text-dim">
+                    stated confidence <span className="text-muted">{investigation.confidence.toFixed(2)}</span>
+                  </span>
+                </div>
+                {investigation.attributionRationale && (
+                  <p className="text-[11px] leading-snug text-dim">{investigation.attributionRationale}</p>
+                )}
+                {data.hypotheses.length > 0 && (
+                  <ul className="space-y-0.5 pt-1">
+                    {data.hypotheses.map((h) => (
+                      <li key={h.id} className="font-mono text-[11px] text-dim">
+                        <span className="text-muted">{h.status}</span> · {h.description}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {investigation.nextActions.map((action) => (
+                  <p key={action} className="font-mono text-[11px] text-muted">
+                    {action}
+                  </p>
+                ))}
+              </div>
+            </Panel>
+          )}
+
+          {fix && (
+            <Panel
+              title="Repair — verified by running it"
+              subtitle={
+                authoredBy
+                  ? `authored by ${authoredBy}${authoredBy === 'model' ? '' : ' (a fixture, not reasoning)'}`
+                  : undefined
+              }
+              dense
+            >
+              <div className="space-y-2 px-3 py-2">
+                <p className="text-[12px] leading-snug text-muted">{fix.rootCause}</p>
+
+                {fix.reproduction && (
+                  <div className="rounded border border-edge px-2 py-1.5">
+                    <div className="font-mono text-[10px] tracking-wider text-dim uppercase">
+                      Reproduction — fail before, pass after
+                    </div>
+                    <div className="mt-1 font-mono text-[11px] text-muted">{fix.reproduction.command}</div>
+                    <div className="mt-1 flex gap-6 font-mono text-[11px]">
+                      <span className="text-dim">
+                        before patch{' '}
+                        <span className={fix.reproduction.beforeFixPassed ? 'text-muted' : 'text-red-400'}>
+                          exit {fix.reproduction.beforeFixExitCode ?? '—'}
+                        </span>
+                      </span>
+                      <span className="text-dim">
+                        after patch{' '}
+                        <span className={fix.reproduction.afterFixPassed ? 'text-emerald-400' : 'text-red-400'}>
+                          exit {fix.reproduction.afterFixExitCode ?? '—'}
+                        </span>
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-snug text-dim">
+                      {fix.reproduction.environmentDescription}
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <div className="font-mono text-[10px] tracking-wider text-dim uppercase">
+                    Checks that ran
+                  </div>
+                  <ul className="mt-1 space-y-0.5">
+                    {fix.validation.map((v) => (
+                      <li key={v.id} className="font-mono text-[11px]">
+                        <span className={v.passed ? 'text-emerald-400' : 'text-red-400'}>
+                          {v.passed ? 'pass' : 'FAIL'}
+                        </span>{' '}
+                        <span className="text-muted">{v.kind}</span>{' '}
+                        <span className="text-dim">
+                          exit {v.exitCode}
+                          {v.testsPassed !== null ? `, ${v.testsPassed} tests passed` : ''} · {v.command}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {/* Anything absent here did not run. It is not a pass. */}
+                  <p className="mt-1 text-[11px] text-dim">
+                    Only checks that actually ran are listed. A check that could not run is not recorded
+                    here and must not be read as passing.
+                  </p>
+                </div>
+
+                <div className="font-mono text-[11px] text-dim">
+                  files{' '}
+                  <span className="text-muted">{fix.files.map((f) => f.path).join(', ')}</span>
+                </div>
+                {fix.risks.length > 0 && (
+                  <div className="font-mono text-[11px] text-dim">
+                    risks <span className="text-muted">{fix.risks.join('; ')}</span>
+                  </div>
+                )}
+                {fix.pullRequestUrl && (
+                  <div className="font-mono text-[11px] text-dim">
+                    handoff{' '}
+                    <a className="text-muted underline" href={fix.pullRequestUrl}>
+                      #{fix.pullRequestNumber}
+                    </a>{' '}
+                    · awaiting human review. Pager Developer cannot merge.
+                  </div>
+                )}
+              </div>
+            </Panel>
+          )}
+
           <Panel title="Telemetry" subtitle="baseline vs observation window" dense>
             {metrics.length === 0 ? (
               <div className="px-3 py-6 text-center text-[12px] text-dim">No telemetry recorded.</div>

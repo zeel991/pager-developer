@@ -1,4 +1,5 @@
 import type { ErrorCluster } from './log-analysis.js';
+import type { InvestigationFindings } from './investigator/schema.js';
 
 /**
  * The seam where code authorship lives.
@@ -20,13 +21,35 @@ export type GeneratorKind = 'model' | 'scripted' | 'none';
 export interface PatchContext {
   service: string;
   repository: string;
+  /** The revision production is running. Never the latest branch head. */
   revision: string;
+  /** The revision it replaced, or null when deployment history is unknown. */
+  previousRevision: string | null;
   cluster: ErrorCluster;
   /** Files the deployment changed, as candidate blame surface. */
   changedFiles: string[];
   /** Contents of files the agent asked to read, keyed by repository path. */
   sources: Record<string, string>;
   testCommand: string | null;
+  /** Example of the repository's own test style, so a new test matches it. */
+  existingTestExample: { path: string; source: string } | null;
+  /** The reasoning step's conclusion. Null when no model investigated. */
+  investigation: InvestigationFindings | null;
+}
+
+/**
+ * Feedback from a failed validation attempt, offered on the single repair retry.
+ *
+ * Carried explicitly rather than accumulated in a conversation, so a generator
+ * cannot be handed an unbounded history and so the retry budget is visible in the
+ * type rather than buried in a loop.
+ */
+export interface RepairFeedback {
+  /** What was tried and rejected. */
+  previousPatch: PatchProposal;
+  /** Which checks failed, with their real output. */
+  failures: { kind: string; exitCode: number | null; output: string }[];
+  summary: string;
 }
 
 export interface RegressionTestProposal {
@@ -34,6 +57,18 @@ export interface RegressionTestProposal {
   path: string;
   source: string;
   rationale: string;
+  /**
+   * Distinctive strings that must appear in the runner's output when the intended
+   * assertion fails against the unpatched code.
+   *
+   * This is what separates "the test suite exited non-zero" from "the specific
+   * failure we set out to demonstrate actually occurred". A missing module, a syntax
+   * error or an unrelated broken test all exit non-zero too, and none of them are a
+   * reproduction.
+   */
+  expectedFailureMarkers: string[];
+  /** What the assertion proves, in one sentence, for the pull request body. */
+  expectedFailureDescription: string;
 }
 
 export interface PatchProposal {
@@ -50,8 +85,13 @@ export interface PatchGenerator {
   readonly kind: GeneratorKind;
   /** A test that fails against the unpatched code. Null when it cannot write one. */
   proposeRegressionTest(context: PatchContext): Promise<RegressionTestProposal | null>;
-  /** The patch. Null when it cannot produce one. */
-  proposePatch(context: PatchContext): Promise<PatchProposal | null>;
+  /**
+   * The patch. Null when it cannot produce one.
+   *
+   * `feedback` is supplied only on the single bounded repair attempt, after a first
+   * patch failed deterministic validation.
+   */
+  proposePatch(context: PatchContext, feedback?: RepairFeedback): Promise<PatchProposal | null>;
 }
 
 export class UnavailableGeneratorError extends Error {
@@ -92,7 +132,13 @@ export class ScriptedPatchGenerator implements PatchGenerator {
 
   constructor(
     private readonly script: {
-      regressionTest?: { path: string; source: string; rationale?: string };
+      regressionTest?: {
+        path: string;
+        source: string;
+        rationale?: string;
+        expectedFailureMarkers?: string[];
+        expectedFailureDescription?: string;
+      };
       patch?: Omit<PatchProposal, 'kind'>;
     },
   ) {}
@@ -105,6 +151,9 @@ export class ScriptedPatchGenerator implements PatchGenerator {
       path: t.path,
       source: t.source,
       rationale: t.rationale ?? 'Supplied by a scripted generator, not authored by a model.',
+      expectedFailureMarkers: t.expectedFailureMarkers ?? [],
+      expectedFailureDescription:
+        t.expectedFailureDescription ?? 'Supplied by a scripted generator.',
     };
   }
 

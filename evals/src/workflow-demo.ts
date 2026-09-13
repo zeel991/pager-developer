@@ -1,13 +1,17 @@
 /**
  * The full incident workflow, end to end, against local twins.
  *
- *   Datadog alert → identify → Jira → Slack → fix on GitHub → PR
- *   → human merges → re-watch Datadog → Notion write-up → team email
+ *   Datadog alert → establish the deployed revision → investigate (Datadog logs and
+ *   metrics, GitHub code and diff, Notion runbooks) → Jira → Slack → regression test
+ *   → patch → verify → PR → human merges → re-watch Datadog → Notion write-up
  *
- * The patch and regression test come from a SCRIPTED generator, clearly labelled as
- * such everywhere they appear. That exercises the pipeline around code authorship
- * without pretending an agent reasoned its way to the fix — authorship is the one
- * step that needs a model, and no model is configured.
+ * Authorship comes from a real model when ANTHROPIC_API_KEY is set, and from a
+ * SCRIPTED generator otherwise. Which one ran is printed, and carried on every
+ * artefact as `kind`, because presenting a fixture as though an agent had reasoned
+ * its way there would be a lie the product tells about itself.
+ *
+ * The merge and the recovery at the end are SIMULATED by this script — there is no
+ * real person and no real deploy here — and both are labelled as such.
  *
  * Usage: pnpm demo:workflow
  */
@@ -22,8 +26,17 @@ import {
   SlackProvider,
   registerViaManifest,
 } from '@pager/providers';
+import type { DeploymentRecord } from '@pager/providers';
 import { AgentTracer, InMemorySink, lemmaFromEnv } from '@pager/observability';
-import { IncidentWorkflow, ScriptedPatchGenerator } from '@pager/agents';
+import {
+  IncidentInvestigator,
+  IncidentWorkflow,
+  ModelPatchGenerator,
+  ScriptedPatchGenerator,
+  describeModelAvailability,
+  modelFromEnv,
+  type PatchGenerator,
+} from '@pager/agents';
 import { INC_001, LocalTwinServer, seedFromFixture } from '@pager/twin-local';
 
 const rule = (t: string) => console.log(`\n${'━'.repeat(78)}\n  ${t}\n${'━'.repeat(78)}`);
@@ -87,30 +100,71 @@ async function main(): Promise<void> {
   const tokens = new GitHubAppTokenSource(endpoints.github, creds);
 
   const sink = new InMemorySink();
+  const tracer = new AgentTracer({ sink, lemma: lemmaFromEnv() });
+  const observability = new DatadogProvider({ baseUrl: endpoints.datadog });
+  const sourceControl = new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() });
+  const knowledge = new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' });
+
+  // Authorship: a real model if one is configured, a fixture otherwise. Never both,
+  // and never silently.
+  const availability = describeModelAvailability();
+  const model = modelFromEnv();
+  const patchGenerator: PatchGenerator = model
+    ? new ModelPatchGenerator({ model, tracer })
+    : new ScriptedPatchGenerator({
+        regressionTest: {
+          path: 'test/regression-inc.test.ts',
+          source: REGRESSION_TEST,
+          expectedFailureMarkers: ['TypeError', "reading 'percentOff'"],
+          expectedFailureDescription: 'Checkout succeeds when no discount code is supplied.',
+        },
+        patch: {
+          rootCause:
+            'createOrder dereferenced request.discountCode without a null check after PR #377 ' +
+            'widened the field to optional.',
+          explanation: 'Guard the optional discount code instead of dereferencing it.',
+          files: [{ path: 'src/checkout/service.ts', content: PATCHED_SERVICE }],
+          risks: ['Touches a contract shared with the storefront.'],
+          rollbackPlan: 'Revert the merge commit. checkout-api holds no migration state.',
+          confidence: 0.91,
+        },
+      });
+
   const workflow = new IncidentWorkflow({
-    observability: new DatadogProvider({ baseUrl: endpoints.datadog }),
-    sourceControl: new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() }),
+    observability,
+    sourceControl,
     messaging: new SlackProvider({ baseUrl: endpoints.slack }),
     issueTracker: new JiraProvider({ baseUrl: endpoints.jira, projectKey: 'INC', siteUrl: 'https://acme.atlassian.net' }),
-    knowledge: new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' }),
+    knowledge,
     email: new ResendProvider({ baseUrl: endpoints.resend, apiKey: 're_test', from: 'pager@acme.dev' }),
-    tracer: new AgentTracer({ sink, lemma: lemmaFromEnv() }),
-    patchGenerator: new ScriptedPatchGenerator({
-      regressionTest: { path: 'test/regression-inc.test.ts', source: REGRESSION_TEST },
-      patch: {
-        rootCause:
-          'createOrder dereferenced request.discountCode without a null check after PR #377 ' +
-          'widened the field to optional.',
-        explanation: 'Guard the optional discount code instead of dereferencing it.',
-        files: [{ path: 'src/checkout/service.ts', content: PATCHED_SERVICE }],
-        risks: ['Touches a contract shared with the storefront.'],
-        rollbackPlan: 'Revert the merge commit. checkout-api holds no migration state.',
-        confidence: 0.91,
-      },
-    }),
+    tracer,
+    patchGenerator,
+    investigator: model
+      ? new IncidentInvestigator({ model, tracer, providers: { observability, sourceControl, knowledge } })
+      : null,
   });
 
   rule('Pager Developer — full incident workflow (local twins)');
+  console.log(`  Connections   github/datadog/slack/jira/notion → LOCAL twins on 127.0.0.1`);
+  console.log(`  Model         ${availability.available ? `${availability.model} (LIVE)` : `none — ${availability.reason}`}`);
+  console.log(`  Authorship    ${model ? 'model-authored regression test and patch' : 'SCRIPTED fixture, no reasoning happened'}`);
+
+  // What production is running, from deployment evidence. The workflow refuses to
+  // substitute the head of the base branch, so this is not optional.
+  const history = await sourceControl.listCommits(spec.repository, { limit: 2 });
+  const deployment: DeploymentRecord = {
+    id: 'dep-inc-184',
+    service: spec.service,
+    environment: 'production',
+    commitSha: history[0]!.sha,
+    previousCommitSha: history[1]?.sha ?? null,
+    status: 'succeeded',
+    startedAt: new Date(Date.parse(spec.deployedAt) - 120_000),
+    deployedAt: new Date(spec.deployedAt),
+    author: history[0]!.authorName,
+    repositoryFullName: spec.repository,
+  };
+  console.log(`  Deployed rev  ${deployment.commitSha.slice(0, 12)} (from the deployment record, not the branch head)\n`);
 
   const result = await workflow.run({
     service: spec.service,
@@ -118,10 +172,39 @@ async function main(): Promise<void> {
     slackChannel: '#incidents',
     incidentKey: 'INC-184',
     teamEmails: ['payments-team@acme.dev'],
+    deployment,
   });
 
   for (const s of result.steps) {
     console.log(`  ${s.stage.padEnd(20)} ${s.summary}`);
+  }
+
+  if (result.investigation) {
+    rule('Investigation');
+    const inv = result.investigation;
+    console.log(`  Model         ${inv.model}`);
+    console.log(`  Tool calls    ${inv.toolCallCount} (${inv.failedToolCalls} failed) across ${inv.modelCalls.length} model call(s)`);
+    console.log(`  Tokens        ${inv.totalInputTokens ?? 'not reported'} in / ${inv.totalOutputTokens ?? 'not reported'} out`);
+    console.log(`  Duration      ${(inv.durationMs / 1000).toFixed(1)}s`);
+    if (inv.findings) {
+      console.log(`\n  MODEL CONCLUSION (an inference, not an observation)`);
+      console.log(`    diagnosis    ${inv.findings.diagnosis}`);
+      console.log(`    attribution  ${inv.findings.attribution.verdict} — ${inv.findings.attribution.rationale}`);
+      console.log(`    unknown      ${inv.findings.uncertainty}`);
+      console.log(`    decision     ${inv.findings.decision.action} — ${inv.findings.decision.reason}`);
+      console.log(`\n  CITED OBSERVATIONS (each id was minted by the tracer for a call that ran)`);
+      for (const ev of inv.findings.evidence) console.log(`    ${ev.toolCallId}  ${ev.shows}`);
+    } else {
+      console.log(`  No conclusion: ${inv.abandonedReason}`);
+    }
+  }
+
+  if (result.reproduction) {
+    rule('Reproduction — observed, not claimed');
+    console.log(`  Command       ${result.reproduction.command}`);
+    console.log(`  Before patch  exit ${result.reproduction.beforeFix.exitCode}`);
+    console.log(`  After patch   exit ${result.reproduction.afterFix?.exitCode ?? 'n/a'}`);
+    console.log(`  Evidence      ${result.reproduction.assertionEvidence.problems.length === 0 ? 'assertion verified' : result.reproduction.assertionEvidence.problems.join('; ')}`);
   }
 
   if (result.haltReason) {
@@ -131,7 +214,9 @@ async function main(): Promise<void> {
   }
 
   // ── The human step ───────────────────────────────────────────────────────
-  rule('Human merges the pull request');
+  rule('SIMULATED: a human merges the pull request');
+  console.log('  This script performs the merge by writing to the twin. There is no real');
+  console.log('  reviewer here. Pager Developer cannot merge and did not merge.');
   const pr = result.pullRequest!;
   const repo = server.current.repositories.get(spec.repository)!;
   const stored = repo.pullRequests.find((p) => p.number === pr.number)!;
@@ -142,6 +227,9 @@ async function main(): Promise<void> {
 
   // ── Resume ───────────────────────────────────────────────────────────────
   rule('Pager resumes: re-watch Datadog, write up, mail the team');
+  console.log('  SIMULATED: the recovered telemetry below is written into the twin by this');
+  console.log('  script. The recovery VERDICT is real — it is computed from those series by');
+  console.log('  the same RecoveryVerifier that would read a real Datadog.\n');
 
   // Production has recovered since the fix shipped.
   const recovered = seedFromFixture({
@@ -191,7 +279,11 @@ async function main(): Promise<void> {
     console.log(`    ${String(n).padStart(3)}  ${tool}`);
   }
 
-  console.log(`\n  Patch authored by: ${result.patch!.kind.toUpperCase()} (no model configured)\n`);
+  console.log(
+    `\n  Patch authored by: ${result.patch!.kind.toUpperCase()}` +
+      (result.patch!.kind === 'model' ? ` (${result.investigation?.model ?? availability.model})` : ' (no model configured — this is a fixture, not reasoning)') +
+      `\n`,
+  );
   await server.stop();
 }
 
