@@ -12,7 +12,8 @@
     "local": "node --env-file-if-exists=../.env --experimental-strip-types src/local-demo.ts",
     "eval": "node --env-file-if-exists=../.env --experimental-strip-types src/run-evals.ts",
     "workflow": "node --env-file-if-exists=../.env --experimental-strip-types src/workflow-demo.ts",
-    "eval:agent": "node --env-file-if-exists=../.env --experimental-strip-types src/run-agent-evals.ts"
+    "eval:agent": "node --env-file-if-exists=../.env --experimental-strip-types src/run-agent-evals.ts",
+    "probe:datadog": "node --env-file-if-exists=../.env --experimental-strip-types src/datadog-probe.ts"
   },
   "dependencies": {
     "@pager/agents": "workspace:*",
