@@ -40,6 +40,13 @@ export interface ProductionAlert {
   escalate: boolean;
   /** Why this was or was not escalated. Always populated. */
   rationale: string;
+  /**
+   * Ids of the tool calls that produced this alert.
+   *
+   * Evidence derived from an alert cites these, so a claim about the logs points at
+   * the query that actually returned them rather than at a summary.
+   */
+  toolCallIds: { monitors: string; logs: string | null };
 }
 
 export interface WatchOptions {
@@ -122,9 +129,10 @@ export class ProductionWatcher {
   ): Promise<ProductionAlert | null> {
     const now = opts.now ?? (() => new Date());
 
-    const { value: monitors } = await ctx.tool('datadog.listMonitors', { service }, () =>
+    const monitorsCall = await ctx.tool('datadog.listMonitors', { service }, () =>
       this.observability.listMonitors(service),
     );
+    const monitors = monitorsCall.value;
 
     const alerting = monitors.find((m) => m.status === 'ALERT');
     if (!alerting) return null;
@@ -135,11 +143,12 @@ export class ProductionWatcher {
       to: new Date(firedAt.getTime() + (opts.lookaheadMinutes ?? DEFAULT_LOOKAHEAD) * 60_000),
     };
 
-    const { value: logs } = await ctx.tool(
+    const logsCall = await ctx.tool(
       'datadog.queryLogs',
       { service, level: 'error', from: logWindow.from, to: logWindow.to },
       () => this.observability.queryLogs(service, logWindow, { level: 'error', limit: opts.logLimit ?? 200 }),
     );
+    const logs = logsCall.value;
 
     const clusters = clusterErrors(logs);
 
@@ -156,6 +165,7 @@ export class ProductionWatcher {
         primary: null,
         novelty: null,
         escalate: false,
+        toolCallIds: { monitors: monitorsCall.toolCallId, logs: logsCall.toolCallId },
         rationale:
           `Monitor "${alerting.name}" is alerting but produced no error logs in the ` +
           `surrounding ${Math.round((logWindow.to.getTime() - logWindow.from.getTime()) / 60_000)} minutes. ` +
@@ -177,6 +187,7 @@ export class ProductionWatcher {
       primary,
       novelty,
       escalate: novelty.novel,
+      toolCallIds: { monitors: monitorsCall.toolCallId, logs: logsCall.toolCallId },
       rationale: novelty.novel
         ? `Monitor "${alerting.name}" is alerting and ${primary.count} error(s) match no documented ` +
           `failure mode. Escalating: ${primary.sample.slice(0, 120)}`

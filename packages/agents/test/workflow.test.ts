@@ -12,7 +12,11 @@ import {
 } from '@pager/providers';
 import { AgentTracer, InMemorySink } from '@pager/observability';
 import { INC_001, INC_009, INC_011, LocalTwinServer, seedFromFixture } from '@pager/twin-local';
-import { IncidentWorkflow } from '../src/workflow.js';
+import {
+  IncidentWorkflow,
+  TELEMETRY_WINDOW_MINUTES,
+  telemetryWindowsFor,
+} from '../src/workflow.js';
 import { NoPatchGenerator, ScriptedPatchGenerator } from '../src/patch-generator.js';
 
 let server: LocalTwinServer;
@@ -211,5 +215,28 @@ describe('IncidentWorkflow', () => {
     // No write-up and no email: there is nothing settled to report.
     expect(after.writeUpUrl).toBeNull();
     expect(server.current.emails).toHaveLength(0);
+  });
+});
+
+describe('telemetry windows', () => {
+  const onset = new Date('2026-09-13T14:32:00Z');
+
+  it('stops the baseline a guard band before the observed onset', () => {
+    // A monitor lags its onset, and logs are sampled while metrics are continuous,
+    // so the first observed error is only an upper bound on when things broke.
+    const [baseline, observation] = telemetryWindowsFor(onset);
+    expect(baseline.to.toISOString()).toBe('2026-09-13T14:28:59.999Z');
+    expect(observation.from.toISOString()).toBe('2026-09-13T14:32:00.000Z');
+  });
+
+  it('never lets the windows overlap', () => {
+    const [baseline, observation] = telemetryWindowsFor(onset);
+    expect(baseline.to.getTime()).toBeLessThan(observation.from.getTime());
+  });
+
+  it('keeps a full-length baseline despite the guard band', () => {
+    const [baseline] = telemetryWindowsFor(onset);
+    const minutes = (baseline.to.getTime() - baseline.from.getTime()) / 60_000;
+    expect(Math.round(minutes)).toBe(TELEMETRY_WINDOW_MINUTES);
   });
 });

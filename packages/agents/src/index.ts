@@ -5,7 +5,6 @@ export * from './incident-engine.js';
 export * from './communication.js';
 export * from './approval.js';
 export * from './recovery.js';
-export * from './orchestrator.js';
 export * from './log-analysis.js';
 export * from './production-watcher.js';
 export * from './patch-generator.js';

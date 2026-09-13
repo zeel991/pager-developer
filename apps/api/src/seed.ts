@@ -1,28 +1,33 @@
 /**
- * Populate the API's database by running the real pipeline against local twins.
+ * Populate the API's database by running the real incident workflow.
  *
- * Not fabricated rows: every incident, timeline entry, agent run, tool call and
- * piece of evidence here is produced by the same code path that would run against
- * Arga or a real vendor. A dashboard populated with hand-written fixtures would
+ * Every incident, timeline entry, state transition, agent run, tool call and piece
+ * of evidence in the dashboard is produced by the same code path that would run
+ * against Arga or the real vendors. A dashboard filled with hand-written rows would
  * demonstrate nothing about whether the system works.
  *
- * Usage: pnpm --filter @pager/api seed [SCENARIO_ID...]
+ * The patch and regression test come from a scripted generator, and are labelled
+ * `scripted` wherever they appear — authorship is the one step that needs a model.
+ *
+ * Usage: pnpm api:seed [SCENARIO_ID...]
  */
 import { rm } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 import { AgentTracer, lemmaFromEnv } from '@pager/observability';
 import {
   DatadogProvider,
   GitHubAppTokenSource,
   GitHubProvider,
+  JiraProvider,
+  NotionProvider,
   PAGER_APP_MANIFEST,
+  ResendProvider,
   SlackProvider,
   registerViaManifest,
-  type DeploymentRecord,
 } from '@pager/providers';
 import {
   AgentRunRepository,
   AuditRepository,
-  DeploymentRepository,
   DrizzleTelemetrySink,
   EvidenceRepository,
   IncidentRepository,
@@ -32,9 +37,10 @@ import {
   repositories as reposTable,
   services,
 } from '@pager/db';
-import { IncidentEngine, IncidentPipeline } from '@pager/agents';
+import { IncidentEngine, IncidentWorkflow, ScriptedPatchGenerator } from '@pager/agents';
 import { FIXTURES, LocalTwinServer, fixture, seedFromFixture } from '@pager/twin-local';
 import { DEFAULT_DATABASE_URL, openDatabase } from './db.ts';
+import { SCRIPTS } from './seed-scripts.ts';
 
 const requested = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const ids = requested.length > 0 ? requested : Object.keys(FIXTURES);
@@ -42,9 +48,15 @@ const ids = requested.length > 0 ? requested : Object.keys(FIXTURES);
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
 
-  // Start from a clean store so seeding is repeatable.
+  // Start from a clean store so seeding is repeatable. The path must be resolved
+  // the same way the client resolves it, or this deletes nothing and the next run
+  // collides with the previous one's rows.
   if (url.startsWith('pglite://') && url !== 'pglite://memory') {
-    await rm(url.slice('pglite://'.length), { recursive: true, force: true });
+    const target = url.slice('pglite://'.length);
+    const dir = isAbsolute(target)
+      ? target
+      : resolve(process.env.PAGER_DATA_ROOT ?? process.cwd(), target);
+    await rm(dir, { recursive: true, force: true });
   }
 
   const handle = await openDatabase(url);
@@ -53,6 +65,8 @@ async function main(): Promise<void> {
   const incidents = new IncidentRepository(handle.db);
   const timeline = new TimelineRepository(handle.db);
   const audit = new AuditRepository(handle.db);
+  const agentRuns = new AgentRunRepository(handle.db);
+  const evidence = new EvidenceRepository(handle.db);
   const engine = new IncidentEngine(incidents, timeline, audit);
   const tracer = new AgentTracer({ sink: new DrizzleTelemetrySink(handle.db), lemma: lemmaFromEnv() });
 
@@ -65,13 +79,6 @@ async function main(): Promise<void> {
     const endpoints = await server.start();
 
     try {
-      const creds = await registerViaManifest(endpoints.github, PAGER_APP_MANIFEST(endpoints.github));
-      const tokens = new GitHubAppTokenSource(endpoints.github, creds);
-      const sourceControl = new GitHubProvider({
-        baseUrl: endpoints.github,
-        tokenProvider: () => tokens.token(),
-      });
-
       const [repo] = await handle.db
         .insert(reposTable)
         .values({
@@ -79,7 +86,7 @@ async function main(): Promise<void> {
           fullName: `${spec.repository}#${id}`,
           language: 'typescript',
           packageManager: 'npm',
-          testCommand: 'node --test',
+          testCommand: 'npm run test',
           profileRefreshedAt: new Date(),
         })
         .returning();
@@ -93,45 +100,44 @@ async function main(): Promise<void> {
         })
         .returning();
 
-      const history = await sourceControl.listCommits(spec.repository, { limit: 20 });
-      const head = await sourceControl.getCommit(spec.repository, history[0]!.sha);
-      const deployment: DeploymentRecord = {
-        id: `dep-${id}`,
-        service: spec.service,
-        environment: 'production',
-        commitSha: head.sha,
-        previousCommitSha: head.parents[0] ?? null,
-        status: 'succeeded',
-        startedAt: new Date(Date.parse(spec.deployedAt) - 120_000),
-        deployedAt: new Date(spec.deployedAt),
-        author: head.authorName,
-        repositoryFullName: spec.repository,
-      };
+      const creds = await registerViaManifest(endpoints.github, PAGER_APP_MANIFEST(endpoints.github));
+      const tokens = new GitHubAppTokenSource(endpoints.github, creds);
 
-      const outcome = await new IncidentPipeline({
-        sourceControl,
+      const workflow = new IncidentWorkflow({
         observability: new DatadogProvider({ baseUrl: endpoints.datadog }),
+        sourceControl: new GitHubProvider({ baseUrl: endpoints.github, tokenProvider: () => tokens.token() }),
         messaging: new SlackProvider({ baseUrl: endpoints.slack }),
+        issueTracker: new JiraProvider({ baseUrl: endpoints.jira, projectKey: 'INC' }),
+        knowledge: new NotionProvider({ baseUrl: endpoints.notion, token: 't', parentPageId: 'runbook-checkout' }),
+        email: new ResendProvider({ baseUrl: endpoints.resend, apiKey: 're_seed', from: 'pager@acme.dev' }),
         tracer,
-        incidents,
-        deployments: new DeploymentRepository(handle.db),
-        evidence: new EvidenceRepository(handle.db),
-        telemetry: new TelemetryRepository(handle.db),
-        agentRuns: new AgentRunRepository(handle.db),
-        engine,
-      }).run({
-        organizationId: org!.id,
-        serviceId: svc!.id,
-        repositoryId: repo!.id,
-        deployment,
-        slackChannel: '#incidents',
+        ...(SCRIPTS[id] ? { patchGenerator: new ScriptedPatchGenerator(SCRIPTS[id]!) } : {}),
+        persistence: {
+          engine,
+          evidence,
+          agentRuns,
+          telemetry: new TelemetryRepository(handle.db),
+          organizationId: org!.id,
+          serviceId: svc!.id,
+        },
       });
 
+      const result = await workflow.run({
+        service: spec.service,
+        repository: spec.repository,
+        slackChannel: '#incidents',
+        teamEmails: ['payments-team@acme.dev'],
+      });
+
+      if (!result.incident) {
+        console.log(`  ${id}  → no incident: ${result.alert?.rationale ?? 'no monitor alerting'}`);
+        continue;
+      }
+
       console.log(
-        outcome.incident
-          ? `  ${id}  → ${outcome.incident.key} ${outcome.incident.state} (${outcome.incident.severity}), ` +
-            `${outcome.evidenceIds.length} evidence, ${outcome.detection.regressions.length} regressions`
-          : `  ${id}  → no incident: ${outcome.noIncidentReason}`,
+        `  ${id}  → ${result.incident.key} ${result.incident.state} (${result.incident.severity})` +
+          (result.pullRequest ? `, PR #${result.pullRequest.number}` : '') +
+          (result.haltReason ? `, halted: ${result.haltReason.slice(0, 60)}…` : ''),
       );
     } finally {
       await server.stop();
@@ -139,7 +145,7 @@ async function main(): Promise<void> {
   }
 
   await handle.close();
-  console.log(`\nDone. Start the API with: pnpm --filter @pager/api start\n`);
+  console.log(`\nDone. Start the API with: pnpm api\n`);
 }
 
 void main().catch((err) => {

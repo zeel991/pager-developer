@@ -112,13 +112,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       runs.map(async (run) => ({ ...run, toolCalls: await agentRuns.toolCallsForRun(run.id) })),
     );
 
-    const snapshots = deployment
-      ? await db
-          .select()
-          .from(telemetrySnapshots)
-          .where(eq(telemetrySnapshots.deploymentId, deployment.id))
-          .orderBy(asc(telemetrySnapshots.metric))
-      : [];
+    // Joined on the service, not the deployment: an alert-driven incident has
+    // telemetry but may have no deployment associated with it at all.
+    const snapshots = await db
+      .select()
+      .from(telemetrySnapshots)
+      .where(eq(telemetrySnapshots.serviceId, incident.serviceId))
+      .orderBy(asc(telemetrySnapshots.metric));
 
     return {
       incident,

@@ -16,8 +16,9 @@ Nothing below needs credentials or network access.
 pnpm install
 
 pnpm eval             # evaluation suite across three scenarios
+pnpm demo:workflow    # the full incident workflow, alert to team email
 pnpm demo:local       # observe + detect, printed to the terminal
-pnpm demo:pipeline    # full pipeline with persistence
+pnpm demo:repo        # run the demo service's own test suite
 
 pnpm api:seed         # populate the database by running the real pipeline
 pnpm api              # API on http://127.0.0.1:4000

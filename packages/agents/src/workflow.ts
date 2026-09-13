@@ -1,7 +1,8 @@
-import type { AgentTracer } from '@pager/observability';
+import type { AgentRunContext, AgentTracer } from '@pager/observability';
 import type {
   EmailProvider,
   IssueTrackerProvider,
+  MetricName,
   KnowledgeProvider,
   MessagingProvider,
   ObservabilityProvider,
@@ -28,6 +29,14 @@ import {
 } from './patch-generator.js';
 import { CommunicationAgent, formatFixReady } from './communication.js';
 import { RecoveryVerifier, type RecoveryVerification } from './recovery.js';
+import type { IncidentEngine } from './incident-engine.js';
+import type { IncidentState } from '@pager/core';
+import type {
+  AgentRunRepository,
+  EvidenceRepository,
+  IncidentRow,
+  TelemetryRepository,
+} from '@pager/db';
 
 /**
  * The incident workflow, end to end.
@@ -70,6 +79,23 @@ export interface WorkflowStep {
   detail?: Record<string, unknown>;
 }
 
+/**
+ * Durable state for the workflow.
+ *
+ * Optional. Without it the workflow still runs end to end — which keeps the tests
+ * fast and means a scenario can be exercised without a database — but nothing is
+ * recorded, so the dashboard has nothing to show and no state machine is enforced.
+ * With it, every stage transition passes through the incident engine's allow-list.
+ */
+export interface WorkflowPersistence {
+  engine: IncidentEngine;
+  evidence: EvidenceRepository;
+  agentRuns: AgentRunRepository;
+  telemetry: TelemetryRepository;
+  organizationId: string;
+  serviceId: string;
+}
+
 export interface WorkflowDeps {
   observability: ObservabilityProvider;
   sourceControl: SourceControlProvider;
@@ -79,6 +105,7 @@ export interface WorkflowDeps {
   email: EmailProvider | null;
   tracer: AgentTracer;
   patchGenerator?: PatchGenerator;
+  persistence?: WorkflowPersistence;
 }
 
 export interface WorkflowInput {
@@ -105,6 +132,8 @@ export interface WorkflowResult {
   recovery: RecoveryVerification | null;
   writeUpUrl: string | null;
   emailed: string[];
+  /** The persisted incident, when persistence is configured. */
+  incident: IncidentRow | null;
   /** Why the workflow stopped where it did. */
   haltReason: string | null;
 }
@@ -130,6 +159,7 @@ export class IncidentWorkflow {
       recovery: null,
       writeUpUrl: null,
       emailed: [],
+      incident: null,
       haltReason: null,
     };
 
@@ -138,17 +168,54 @@ export class IncidentWorkflow {
       steps.push({ stage, at: new Date(), summary, ...(detail ? { detail } : {}) });
     };
 
-    const halt = (reason: string): WorkflowResult => {
+    /**
+     * Run an agent, tagged with the incident once one exists.
+     *
+     * Every agent run goes through this rather than calling the tracer directly, so
+     * a run cannot be orphaned by a call site forgetting to pass the id — which
+     * would hide it from the incident page.
+     */
+    const trace = <T>(name: string, fn: (ctx: AgentRunContext) => Promise<T>): Promise<T> =>
+      this.deps.tracer.run(name, { incidentId: result.incident?.id ?? null }, fn);
+
+    /**
+     * Move the persisted incident to a new state.
+     *
+     * The engine validates against the allow-list, so an illegal transition throws
+     * and is audited rather than quietly applied. Without persistence this is a
+     * no-op, which is why the step log is kept separately — the narrative survives
+     * even when there is no database.
+     */
+    const advance = async (to: IncidentState, summary: string): Promise<void> => {
+      const p = this.deps.persistence;
+      if (!p || !result.incident) return;
+      result.incident = await p.engine.transition(result.incident.id, { to, summary, actor: 'agent:IncidentWorkflow' });
+    };
+
+    const note = async (kind: string, summary: string): Promise<void> => {
+      const p = this.deps.persistence;
+      if (!p || !result.incident) return;
+      await p.engine.note(result.incident.id, { kind, summary });
+    };
+
+    const halt = async (reason: string): Promise<WorkflowResult> => {
       result.haltReason = reason;
       step('halted', reason);
+      // An incident that stopped without resolving stays open and says why. It is
+      // not marked resolved, and it is not silently abandoned.
+      await note('workflow_halted', reason);
       return result;
     };
 
     // ── 1. Datadog is watching ───────────────────────────────────────────────
     const watcher = new ProductionWatcher(this.deps.observability, this.deps.knowledge);
-    const alert = await this.deps.tracer.run('ProductionWatcher', { input: { service: input.service } }, (ctx) =>
-      watcher.check(ctx, input.service),
-    );
+    const preIncidentRuns: string[] = [];
+    const alert = await this.deps.tracer.run('ProductionWatcher', { input: { service: input.service } }, (ctx) => {
+      // Detection happens before an incident exists, so this run is linked to it
+      // afterwards. Otherwise the incident page would omit the run that opened it.
+      preIncidentRuns.push(ctx.agentRunId);
+      return watcher.check(ctx, input.service);
+    });
     result.alert = alert;
 
     if (!alert) {
@@ -172,12 +239,36 @@ export class IncidentWorkflow {
       line: frame?.line ?? null,
     });
 
-    const incidentKey = input.incidentKey ?? `INC-${Date.now().toString(36).toUpperCase()}`;
     const title = `${input.service}: ${cluster.errorType ?? 'Error'} on ${cluster.affectedRoutes[0] ?? 'production'}`;
+
+    // Open the incident before anything else happens, so every subsequent action is
+    // recorded against it rather than floating free.
+    const persistence = this.deps.persistence;
+    if (persistence) {
+      result.incident = await persistence.engine.open({
+        organizationId: persistence.organizationId,
+        serviceId: persistence.serviceId,
+        title,
+        severity: severityFor(cluster.count),
+      });
+      await persistence.agentRuns.attachToIncident(preIncidentRuns, result.incident.id);
+      await this.recordAlertEvidence(persistence, result.incident.id, alert);
+      await this.captureTelemetry(persistence, result.incident.id, alert, trace);
+      await advance('INVESTIGATING', describeAlert(alert));
+      // A stack trace locates the failure. That is a suspicion, not a verdict.
+      await advance(
+        'ROOT_CAUSE_SUSPECTED',
+        frame
+          ? `Stack trace locates the failure at ${toRepositoryPath(frame.file)}:${frame.line}.`
+          : 'No application frame in the stack trace; the location is unknown.',
+      );
+    }
+
+    const incidentKey = input.incidentKey ?? result.incident?.key ?? `INC-${Date.now().toString(36).toUpperCase()}`;
 
     // ── 3. Jira ticket ───────────────────────────────────────────────────────
     if (this.deps.issueTracker) {
-      const issue = await this.deps.tracer.run('IssueTracker', {}, async (ctx) => {
+      const issue = await trace('IssueTracker', async (ctx) => {
         const { value } = await ctx.tool('issues.createIssue', { title }, () =>
           this.deps.issueTracker!.createIssue({
             title,
@@ -207,21 +298,21 @@ export class IncidentWorkflow {
 
     // ── 4. Slack ─────────────────────────────────────────────────────────────
     const comms = new CommunicationAgent(this.deps.messaging);
-    const thread = await this.deps.tracer.run('CommunicationAgent', {}, (ctx) =>
+    const thread = await trace('CommunicationAgent', (ctx) =>
       comms.openThread(ctx, input.slackChannel, this.openingMessage(alert, incidentKey, result.issue)),
     );
     step('team_notified', `Posted to ${input.slackChannel}`, { threadTs: thread.id });
 
     // ── 5. Work the fix on a branch ──────────────────────────────────────────
     const baseBranch = input.baseBranch ?? 'main';
-    const history = await this.deps.tracer.run('RepositoryInvestigator', {}, async (ctx) => {
+    const history = await trace('RepositoryInvestigator', async (ctx) => {
       const { value } = await ctx.tool('github.listCommits', { repo: input.repository }, () =>
         this.deps.sourceControl.listCommits(input.repository, { ref: baseBranch, limit: 1 }),
       );
       return value;
     });
     const headSha = history[0]?.sha;
-    if (!headSha) return halt(`Could not resolve the head of ${baseBranch}; cannot build a sandbox.`);
+    if (!headSha) return await halt(`Could not resolve the head of ${baseBranch}; cannot build a sandbox.`);
 
     const sandbox = await Sandbox.create(this.deps.sourceControl, input.repository, headSha, {
       ...(input.sandboxRoot ? { rootDir: input.sandboxRoot } : {}),
@@ -246,7 +337,7 @@ export class IncidentWorkflow {
       const proposedTest: RegressionTestProposal | null =
         await this.generator.proposeRegressionTest(context);
       if (!proposedTest) {
-        return halt(
+        return await halt(
           `No patch generator is configured, so no regression test could be written. ` +
             `The failure is located at ${frame ? `${toRepositoryPath(frame.file)}:${frame.line}` : 'an unknown frame'} ` +
             `and the sandbox is ready at the deployed revision.`,
@@ -254,6 +345,7 @@ export class IncidentWorkflow {
       }
 
       step('reproducing', `Writing a regression test (${proposedTest.kind}).`, { path: proposedTest.path });
+      await advance('REPRODUCING', `Writing a regression test (${proposedTest.kind}).`);
       const attempt = await reproduction.demonstrateFailure({
         testPath: proposedTest.path,
         testSource: proposedTest.source,
@@ -262,27 +354,31 @@ export class IncidentWorkflow {
       result.reproduction = attempt;
 
       if (attempt.failureReason) {
-        return halt(`Reproduction failed: ${attempt.failureReason}`);
+        return await halt(`Reproduction failed: ${attempt.failureReason}`);
       }
       step('reproducing', describeReproduction(attempt));
+      // The failure reproduced, which is what confirms the root cause.
+      await advance('ROOT_CAUSE_CONFIRMED', describeReproduction(attempt));
 
       // 5b. The patch.
       const patch = await this.generator.proposePatch(context);
-      if (!patch) return halt('The patch generator produced no patch.');
+      if (!patch) return await halt('The patch generator produced no patch.');
       result.patch = patch;
 
       step('patching', `Applying a ${patch.kind} patch to ${patch.files.length} file(s).`, {
         rootCause: patch.rootCause,
       });
+      await advance('FIXING', `Applying a ${patch.kind} patch: ${patch.rootCause}`);
       for (const file of patch.files) await sandbox.writeFile(file.path, file.content);
 
       // 5c. Verify. The reproduction must now pass, and so must everything else.
       const confirmed = await reproduction.confirmFix(attempt);
       result.reproduction = confirmed;
       if (!confirmed.proven) {
-        return halt(`Patch rejected: ${confirmed.failureReason}`);
+        return await halt(`Patch rejected: ${confirmed.failureReason}`);
       }
 
+      await advance('VALIDATING', 'Running deterministic verification.');
       const summary = await validation.runAll(profile);
       result.validation = [confirmed.afterFix!, ...summary.runs];
       step('validating', `Verification: ${summary.allPassed ? 'passed' : 'FAILED'}`, {
@@ -290,12 +386,12 @@ export class IncidentWorkflow {
         skipped: summary.skipped,
       });
       if (!summary.allPassed) {
-        return halt('Deterministic verification did not pass; the patch is not offered for merge.');
+        return await halt('Deterministic verification did not pass; the patch is not offered for merge.');
       }
 
       // 5d. Branch, commit, pull request.
       const branch = `pager/${incidentKey.toLowerCase()}`;
-      const pr = await this.deps.tracer.run('FixAgent', {}, async (ctx) => {
+      const pr = await trace('FixAgent', async (ctx) => {
         await ctx.tool('github.createBranch', { repo: input.repository, branch }, () =>
           this.deps.sourceControl.createBranch(input.repository, headSha, branch),
         );
@@ -323,9 +419,10 @@ export class IncidentWorkflow {
 
       result.pullRequest = pr;
       step('pr_opened', `Opened #${pr.number}`, { url: pr.url });
+      await advance('FIX_READY', `Pull request #${pr.number} opened: ${pr.url}`);
 
       // ── 6. Ask for a merge ─────────────────────────────────────────────────
-      await this.deps.tracer.run('CommunicationAgent', {}, (ctx) =>
+      await trace('CommunicationAgent', (ctx) =>
         comms.reply(
           ctx,
           thread,
@@ -348,6 +445,7 @@ export class IncidentWorkflow {
         ),
       );
       step('awaiting_merge', `Asked the team to review and merge #${pr.number}.`);
+      await advance('AWAITING_APPROVAL', `Awaiting human review and merge of #${pr.number}.`);
 
       return result;
     } finally {
@@ -366,6 +464,8 @@ export class IncidentWorkflow {
     input: WorkflowInput & {
       pullRequestNumber: number;
       incidentKey: string;
+      /** Persisted incident id, when persistence is configured. */
+      incidentId?: string | null;
       slackThread: { id: string; channel: string };
       issueKey?: string | null;
       baselineWindow: TimeRange;
@@ -388,6 +488,7 @@ export class IncidentWorkflow {
       recovery: null,
       writeUpUrl: null,
       emailed: [],
+      incident: null,
       haltReason: null,
     };
     const step = (stage: WorkflowStage, summary: string): void => {
@@ -395,8 +496,27 @@ export class IncidentWorkflow {
       steps.push({ stage, at: new Date(), summary });
     };
 
+    const persistence = this.deps.persistence;
+    const incidentId = input.incidentId ?? null;
+
+    const trace = <T>(name: string, fn: (ctx: AgentRunContext) => Promise<T>): Promise<T> =>
+      this.deps.tracer.run(name, { incidentId }, fn);
+
+    const advance = async (to: IncidentState, summary: string): Promise<void> => {
+      if (!persistence || !incidentId) return;
+      result.incident = await persistence.engine.transition(incidentId, {
+        to,
+        summary,
+        actor: 'agent:IncidentWorkflow',
+      });
+    };
+    const note = async (kind: string, summary: string): Promise<void> => {
+      if (!persistence || !incidentId) return;
+      await persistence.engine.note(incidentId, { kind, summary });
+    };
+
     // Confirm the merge from the provider rather than trusting the caller.
-    const pr = await this.deps.tracer.run('FixAgent', {}, async (ctx) => {
+    const pr = await trace('FixAgent', async (ctx) => {
       const { value } = await ctx.tool('github.getPullRequest', { number: input.pullRequestNumber }, () =>
         this.deps.sourceControl.getPullRequest(input.repository, input.pullRequestNumber),
       );
@@ -407,9 +527,15 @@ export class IncidentWorkflow {
     if (pr.state !== 'merged') {
       result.haltReason = `Pull request #${pr.number} is ${pr.state}, not merged. Nothing to verify yet.`;
       step('awaiting_merge', result.haltReason);
+      await note('merge_pending', result.haltReason);
       return result;
     }
     step('merged', `#${pr.number} merged.`);
+    // The human merge is the approval. Recording it as such is the whole point of
+    // the gate: the only production-affecting act was performed by a person.
+    await advance('APPROVED', `#${pr.number} merged by a human.`);
+    await advance('DEPLOYING_FIX', `Merged fix shipping for ${input.service}.`);
+    await advance('VERIFYING_RECOVERY', 'Watching telemetry for a return to baseline.');
 
     // ── 7. Watch Datadog again ───────────────────────────────────────────────
     const verifier = new RecoveryVerifier(this.deps.observability);
@@ -431,14 +557,18 @@ export class IncidentWorkflow {
         'Signals have not returned to baseline after the merge. The incident remains open ' +
         'and no write-up is sent, because there is nothing settled to report.';
       step('halted', result.haltReason);
+      await note('recovery_not_verified', result.haltReason);
       return result;
     }
     step('recovered', 'Signals returned to baseline.');
+    // RESOLVED is reachable only from VERIFYING_RECOVERY, so this is the single
+    // point in the system where an incident can close.
+    await advance('RESOLVED', 'Signals returned to baseline; recovery verified.');
 
     // ── 8. Write it up in Notion ─────────────────────────────────────────────
     const writeUp = this.writeUp(input.incidentKey, input.alert, input.rootCause, pr, recovery);
     if (this.deps.knowledge) {
-      const doc = await this.deps.tracer.run('CommunicationAgent', {}, async (ctx) => {
+      const doc = await trace('CommunicationAgent', async (ctx) => {
         const { value } = await ctx.tool('notion.createDocument', { title: writeUp.title }, () =>
           this.deps.knowledge!.createDocument({ title: writeUp.title, content: writeUp.body }),
         );
@@ -453,7 +583,7 @@ export class IncidentWorkflow {
     // ── 9. Mail the team ─────────────────────────────────────────────────────
     const recipients = input.teamEmails ?? [];
     if (this.deps.email && recipients.length > 0) {
-      await this.deps.tracer.run('CommunicationAgent', {}, async (ctx) => {
+      await trace('CommunicationAgent', async (ctx) => {
         await ctx.tool('email.send', { to: recipients }, () =>
           this.deps.email!.send({
             to: recipients,
@@ -502,6 +632,128 @@ export class IncidentWorkflow {
     }
 
     return result;
+  }
+
+  /**
+   * Capture what the metrics were doing either side of the alert.
+   *
+   * Anchored on when the errors actually started, not when the monitor fired.
+   *
+   * A monitor lags its onset — it evaluates over a window and needs the threshold
+   * held — so anchoring on the alert time pulls the first minutes of the incident
+   * into the "baseline" and inflates it. Measured here: anchoring on the alert put
+   * a 0.4% baseline at 2.1%, which understates the regression by five times. The
+   * first error in the cluster is the observed onset, so that is the boundary,
+   * with the baseline half-open below it.
+   *
+   * The observed onset is only an upper bound on the true one: metrics are
+   * continuous while logs are sampled, so the rate can move before the first log we
+   * hold. A short guard band is therefore subtracted before the baseline ends.
+   * Measured on INC-001, this is the difference between a 1.0% baseline and the
+   * 0.4% the service actually sits at. The cost is a slightly shorter baseline,
+   * which is a far better trade than a contaminated one — a contaminated baseline
+   * understates every regression measured against it.
+   *
+   * Snapshots keep their full point lists, so the incident page charts the
+   * telemetry the decision was made on rather than a summary of it.
+   *
+   * Failures here are recorded and skipped. Losing a chart is not a reason to
+   * abandon an incident.
+   */
+  private async captureTelemetry(
+    persistence: WorkflowPersistence,
+    incidentId: string,
+    alert: ProductionAlert,
+    trace: <T>(name: string, fn: (ctx: AgentRunContext) => Promise<T>) => Promise<T>,
+  ): Promise<void> {
+    const metrics: MetricName[] = [
+      'error_rate',
+      'http_5xx_rate',
+      'latency_p50',
+      'latency_p95',
+      'request_throughput',
+      'availability',
+    ];
+    const windows = telemetryWindowsFor(alert.primary?.firstSeen ?? alert.firedAt);
+
+    await trace('TelemetryCollector', async (ctx) => {
+      for (const metric of metrics) {
+        for (const window of windows) {
+          try {
+            const call = await ctx.tool(
+              'datadog.queryMetric',
+              { service: alert.service, metric, window: window.kind },
+              () => this.deps.observability.queryMetric(alert.service, metric, window),
+            );
+            const values = call.value.points.map((pt) => pt.value);
+            if (values.length === 0) continue;
+            await persistence.telemetry.record({
+              serviceId: persistence.serviceId,
+              metric,
+              windowKind: window.kind,
+              windowFrom: window.from,
+              windowTo: window.to,
+              unit: call.value.unit,
+              sampleCount: values.length,
+              mean: values.reduce((a, b) => a + b, 0) / values.length,
+              min: Math.min(...values),
+              max: Math.max(...values),
+              points: call.value.points.map((pt) => ({ at: pt.at.toISOString(), value: pt.value })),
+              sourceToolCallId: call.toolCallId,
+            });
+          } catch {
+            // Already recorded as a failed tool call by the tracer.
+          }
+        }
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Record what the alert observed as evidence.
+   *
+   * Two rows, both citing the tool call that produced them: the monitor state and
+   * the error cluster. Both are OBSERVED — they are readings, not inferences — and
+   * neither asserts a cause.
+   */
+  private async recordAlertEvidence(
+    persistence: WorkflowPersistence,
+    incidentId: string,
+    alert: ProductionAlert,
+  ): Promise<void> {
+    await persistence.evidence.record({
+      incidentId,
+      kind: 'DATADOG_MONITOR',
+      provenance: 'OBSERVED',
+      summary: `Monitor "${alert.monitor.name}" is in ALERT since ${alert.firedAt.toISOString()}.`,
+      sourceToolCallId: alert.toolCallIds.monitors,
+      sourceRef: `monitor:${alert.monitor.id}`,
+      payload: { query: alert.monitor.query, status: alert.monitor.status },
+    });
+
+    const cluster = alert.primary;
+    if (!cluster || !alert.toolCallIds.logs) return;
+
+    const frame = cluster.topApplicationFrame;
+    await persistence.evidence.record({
+      incidentId,
+      kind: frame ? 'STACK_TRACE' : 'DATADOG_LOG',
+      provenance: 'OBSERVED',
+      summary:
+        `${cluster.errorType ?? 'Error'} occurred ${cluster.count} times between ` +
+        `${cluster.firstSeen.toISOString()} and ${cluster.lastSeen.toISOString()}` +
+        (frame ? `, failing at ${toRepositoryPath(frame.file)}:${frame.line}.` : '.'),
+      sourceToolCallId: alert.toolCallIds.logs,
+      sourceRef: frame ? `${toRepositoryPath(frame.file)}:${frame.line}` : null,
+      payload: {
+        signature: cluster.signature,
+        sample: cluster.sample,
+        count: cluster.count,
+        routes: cluster.affectedRoutes,
+        entirelyInDependencies: cluster.entirelyInDependencies,
+      },
+    });
   }
 
   /** Read the files the stack trace implicates, so a generator has real source. */
@@ -625,4 +877,41 @@ export class IncidentWorkflow {
     ];
     return { title: `${incidentKey} — ${alert.service} incident write-up`, body: lines.join('\n\n') };
   }
+}
+
+/**
+ * Severity from how loud the failure is.
+ *
+ * Occurrence count is the only signal available at alert time. This path is
+ * triggered by errors appearing rather than by a metric moving, so there is no
+ * baseline to compare against — and inventing one would be worse than a crude
+ * but honest threshold.
+ */
+/**
+ * How far before the first observed error the baseline stops.
+ *
+ * Absorbs the gap between a metric moving and the first log that records it.
+ */
+export const ONSET_GUARD_MINUTES = 3;
+
+export const TELEMETRY_WINDOW_MINUTES = 30;
+
+/** Baseline and observation windows either side of an observed onset. */
+export function telemetryWindowsFor(
+  onset: Date,
+): readonly [{ kind: 'baseline'; from: Date; to: Date }, { kind: 'observation'; from: Date; to: Date }] {
+  const t = onset.getTime();
+  const guard = ONSET_GUARD_MINUTES * 60_000;
+  const span = TELEMETRY_WINDOW_MINUTES * 60_000;
+  return [
+    { kind: 'baseline', from: new Date(t - guard - span), to: new Date(t - guard - 1) },
+    { kind: 'observation', from: new Date(t), to: new Date(t + span) },
+  ];
+}
+
+function severityFor(occurrences: number): 'SEV1' | 'SEV2' | 'SEV3' | 'SEV4' {
+  if (occurrences >= 20) return 'SEV1';
+  if (occurrences >= 5) return 'SEV2';
+  if (occurrences >= 2) return 'SEV3';
+  return 'SEV4';
 }

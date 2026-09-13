@@ -11,7 +11,6 @@
     "phase1": "node --env-file-if-exists=../.env --experimental-strip-types src/phase1-demo.ts",
     "local": "node --env-file-if-exists=../.env --experimental-strip-types src/local-demo.ts",
     "eval": "node --env-file-if-exists=../.env --experimental-strip-types src/run-evals.ts",
-    "incident": "node --env-file-if-exists=../.env --experimental-strip-types src/pipeline-demo.ts",
     "workflow": "node --env-file-if-exists=../.env --experimental-strip-types src/workflow-demo.ts"
   },
   "dependencies": {
