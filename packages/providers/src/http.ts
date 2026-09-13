@@ -8,6 +8,11 @@
 export interface HttpOptions {
   baseUrl: string;
   headers?: Record<string, string>;
+  /**
+   * Resolved per request, for credentials that expire — a GitHub App installation
+   * token, for instance. Merged over the static headers.
+   */
+  dynamicHeaders?: () => Promise<Record<string, string>>;
   fetchImpl?: typeof globalThis.fetch;
   timeoutMs?: number;
 }
@@ -39,12 +44,14 @@ export class ProviderHttpError extends Error {
 export class Http {
   private readonly baseUrl: string;
   private readonly headers: Record<string, string>;
+  private readonly dynamicHeaders: (() => Promise<Record<string, string>>) | null;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
 
   constructor(opts: HttpOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.headers = opts.headers ?? {};
+    this.dynamicHeaders = opts.dynamicHeaders ?? null;
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
   }
@@ -82,6 +89,7 @@ export class Http {
   private async request<T>(method: string, url: string, body?: unknown): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const resolved = this.dynamicHeaders ? await this.dynamicHeaders() : {};
     try {
       const res = await this.fetchImpl(url, {
         method,
@@ -89,6 +97,7 @@ export class Http {
           accept: 'application/json',
           ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
           ...this.headers,
+          ...resolved,
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,

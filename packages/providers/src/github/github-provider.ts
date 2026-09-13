@@ -41,6 +41,17 @@ interface GhCompareResponse {
   commits?: GhCommitResponse[];
 }
 
+interface GhTreeEntry {
+  path: string;
+  type: string;
+  sha: string;
+  size?: number;
+}
+
+interface GhTreeResponse {
+  tree?: GhTreeEntry[];
+}
+
 interface GhPullRequest {
   number: number;
   title: string;
@@ -64,6 +75,11 @@ const FILE_STATUS: Record<string, ChangedFile['status']> = {
 export interface GitHubProviderOptions {
   baseUrl: string;
   token?: string;
+  /**
+   * Resolves a bearer token per request. Used for GitHub App installation tokens,
+   * which expire and must be reminted; takes precedence over a static `token`.
+   */
+  tokenProvider?: () => Promise<string>;
   fetchImpl?: typeof globalThis.fetch;
 }
 
@@ -72,18 +88,38 @@ export class GitHubProvider implements SourceControlProvider {
   private readonly http: Http;
   private readonly baseUrl: string;
   private readonly token: string | undefined;
+  private readonly tokenProvider: (() => Promise<string>) | undefined;
 
   constructor(opts: GitHubProviderOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.token = opts.token;
+    this.tokenProvider = opts.tokenProvider;
     this.http = new Http({
       baseUrl: this.baseUrl,
       headers: {
-        ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+        ...(opts.token && !opts.tokenProvider ? { authorization: `Bearer ${opts.token}` } : {}),
         'x-github-api-version': '2022-11-28',
       },
+      ...(opts.tokenProvider
+        ? { dynamicHeaders: async () => ({ authorization: `Bearer ${await opts.tokenProvider!()}` }) }
+        : {}),
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     });
+  }
+
+  /** Current credential, for the sandbox clone URL. Never logged. */
+  private async currentToken(): Promise<string | undefined> {
+    if (this.tokenProvider) return this.tokenProvider();
+    return this.token;
+  }
+
+  /** Clone URL carrying a freshly resolved credential. */
+  async authenticatedCloneUrl(repo: string): Promise<string> {
+    const token = await this.currentToken();
+    const url = new URL(this.baseUrl);
+    const host = url.host.startsWith('api.') ? url.host.slice(4) : url.host;
+    const auth = token ? `x-access-token:${encodeURIComponent(token)}@` : '';
+    return `${url.protocol}//${auth}${host}/${repo}.git`;
   }
 
   async getCommit(repo: string, sha: string): Promise<Commit> {
@@ -91,11 +127,33 @@ export class GitHubProvider implements SourceControlProvider {
     return toCommit(res);
   }
 
+  /**
+   * The diff between two revisions.
+   *
+   * `/compare` is the direct route and is what real GitHub answers. Some
+   * GitHub-compatible implementations — including the Arga twin — return the correct
+   * compare schema with an empty `files` array, because they store the object graph
+   * but do not compute diffs. Rather than reporting "nothing changed" (which an
+   * investigation would read as a real absence and could use to exonerate a
+   * deployment), an empty compare falls back to diffing the two git trees directly.
+   *
+   * Tree comparison is not an approximation: comparing blob shas path-by-path is
+   * what a diff is. It costs the line counts, which are reported as zero and
+   * flagged via `patch: null` rather than invented.
+   */
   async getDiff(repo: string, baseSha: string, headSha: string): Promise<Diff> {
     const res = await this.http.get<GhCompareResponse>(
       `/repos/${repo}/compare/${baseSha}...${headSha}`,
     );
     const files = res.files ?? [];
+
+    if (files.length === 0) {
+      const fromTrees = await this.diffTrees(repo, baseSha, headSha);
+      if (fromTrees.length > 0) {
+        return { baseSha, headSha, files: fromTrees, patch: null };
+      }
+    }
+
     return {
       baseSha,
       headSha,
@@ -119,14 +177,78 @@ export class GitHubProvider implements SourceControlProvider {
     return (res.commits ?? []).map(toCommit);
   }
 
+  /** Recursive tree for a revision, as a path -> blob sha map. */
+  private async treeMap(repo: string, sha: string): Promise<Map<string, string>> {
+    const res = await this.http.getOptional<GhTreeResponse>(
+      `/repos/${repo}/git/trees/${sha}`,
+      { recursive: 1 },
+    );
+    const map = new Map<string, string>();
+    for (const entry of res?.tree ?? []) {
+      if (entry.type === 'blob') map.set(entry.path, entry.sha);
+    }
+    return map;
+  }
+
+  /** Changed files derived by comparing two revisions' trees. */
+  private async diffTrees(repo: string, baseSha: string, headSha: string): Promise<ChangedFile[]> {
+    const [base, head] = await Promise.all([
+      this.treeMap(repo, baseSha),
+      this.treeMap(repo, headSha),
+    ]);
+    if (base.size === 0 && head.size === 0) return [];
+
+    const changed: ChangedFile[] = [];
+    for (const [path, sha] of head) {
+      const before = base.get(path);
+      if (before === undefined) {
+        changed.push({ path, status: 'added', additions: 0, deletions: 0 });
+      } else if (before !== sha) {
+        changed.push({ path, status: 'modified', additions: 0, deletions: 0 });
+      }
+    }
+    for (const path of base.keys()) {
+      if (!head.has(path)) {
+        changed.push({ path, status: 'removed', additions: 0, deletions: 0 });
+      }
+    }
+    return changed.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async listCommits(repo: string, opts: { ref?: string; limit?: number } = {}): Promise<Commit[]> {
+    const res = await this.http.get<GhCommitResponse[]>(`/repos/${repo}/commits`, {
+      ...(opts.ref ? { sha: opts.ref } : {}),
+      per_page: opts.limit ?? 30,
+    });
+    return (res ?? []).map(toCommit);
+  }
+
   async getPullRequest(repo: string, number: number): Promise<PullRequest> {
     const res = await this.http.get<GhPullRequest>(`/repos/${repo}/pulls/${number}`);
     return toPullRequest(res);
   }
 
+  /**
+   * Pull requests associated with a commit.
+   *
+   * `/commits/{sha}/pulls` is the direct route, but not every GitHub-compatible
+   * implementation provides it. Rather than reporting "no pull requests" — which
+   * downstream would read as a real absence — an empty or missing result falls back
+   * to matching the commit against merged pull requests' merge commits.
+   */
   async listPullRequestsForCommit(repo: string, sha: string): Promise<PullRequest[]> {
-    const res = await this.http.get<GhPullRequest[]>(`/repos/${repo}/commits/${sha}/pulls`);
-    return (res ?? []).map(toPullRequest);
+    const direct = await this.http.getOptional<GhPullRequest[]>(
+      `/repos/${repo}/commits/${sha}/pulls`,
+    );
+    if (direct && direct.length > 0) return direct.map(toPullRequest);
+
+    const all = await this.http.getOptional<GhPullRequest[]>(`/repos/${repo}/pulls`, {
+      state: 'all',
+      per_page: 100,
+    });
+    return (all ?? [])
+      .filter((pr) => pr.merge_commit_sha === sha || pr.head?.sha === sha)
+      .map(toPullRequest);
   }
 
   async getFile(repo: string, ref: string, path: string): Promise<string | null> {

@@ -29,6 +29,7 @@ function stubScm(over: Partial<SourceControlProvider> = {}): SourceControlProvid
       ],
       patch: '@@ patch @@',
     }),
+    listCommits: async () => [],
     listCommitsBetween: async () => [
       {
         sha: 'b2c3d4',

@@ -18,7 +18,8 @@
     "db:seed": "pnpm --filter @pager/db seed",
     "dev": "pnpm --parallel --filter './apps/**' dev",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
-    "preflight": "pnpm --filter @pager/evals preflight"
+    "preflight": "pnpm --filter @pager/evals preflight",
+    "demo:phase1": "pnpm --filter @pager/evals phase1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

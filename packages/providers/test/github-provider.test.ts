@@ -159,3 +159,86 @@ describe('GitHubProvider', () => {
     expect(real.cloneUrl('acme/checkout-api')).toBe('https://tok@github.com/acme/checkout-api.git');
   });
 });
+
+describe('GitHubProvider diff fallbacks', () => {
+  // These cover behaviour discovered against a real Arga GitHub twin on 2026-09-13:
+  // the twin returns a correctly-shaped /compare response with an empty files array,
+  // and an empty /pulls/{n}/files, because it stores the object graph without
+  // computing diffs.
+
+  it('falls back to tree comparison when compare returns no files', async () => {
+    const trees: Record<string, unknown> = {
+      base: { tree: [
+        { path: 'package.json', type: 'blob', sha: 'p1' },
+        { path: 'src/checkout/service.ts', type: 'blob', sha: 's1' },
+        { path: 'src/legacy.ts', type: 'blob', sha: 'l1' },
+      ] },
+      head: { tree: [
+        { path: 'package.json', type: 'blob', sha: 'p1' },
+        { path: 'src/checkout/service.ts', type: 'blob', sha: 's2' },
+        { path: 'src/checkout/types.ts', type: 'blob', sha: 't1' },
+      ] },
+    };
+    const { fetchImpl } = stubFetch([
+      (u) => (u.includes('/compare/') ? { body: { files: [], commits: [] } } : undefined),
+      (u) => (u.includes('/git/trees/base') ? { body: trees.base } : undefined),
+      (u) => (u.includes('/git/trees/head') ? { body: trees.head } : undefined),
+    ]);
+    const gh = new GitHubProvider({ baseUrl: 'https://twin.test', fetchImpl });
+    const diff = await gh.getDiff('acme/checkout-api', 'base', 'head');
+
+    expect(diff.files).toEqual([
+      { path: 'src/checkout/service.ts', status: 'modified', additions: 0, deletions: 0 },
+      { path: 'src/checkout/types.ts', status: 'added', additions: 0, deletions: 0 },
+      { path: 'src/legacy.ts', status: 'removed', additions: 0, deletions: 0 },
+    ]);
+    // Line counts are unknown from trees alone, and are left at zero with a null
+    // patch rather than invented.
+    expect(diff.patch).toBeNull();
+  });
+
+  it('prefers the compare response when it does carry files', async () => {
+    const { fetchImpl, seen } = stubFetch([
+      (u) =>
+        u.includes('/compare/')
+          ? { body: { files: [{ filename: 'a.ts', status: 'modified', additions: 5, deletions: 1, patch: '@@' }] } }
+          : undefined,
+    ]);
+    const gh = new GitHubProvider({ baseUrl: 'https://api.github.com', fetchImpl });
+    const diff = await gh.getDiff('r/r', 'a', 'b');
+
+    expect(diff.files[0]!.additions).toBe(5);
+    expect(seen.some((s) => s.includes('/git/trees/'))).toBe(false);
+  });
+
+  it('reports an empty diff when both compare and trees are empty', async () => {
+    const { fetchImpl } = stubFetch([
+      (u) => (u.includes('/compare/') ? { body: { files: [] } } : undefined),
+      (u) => (u.includes('/git/trees/') ? { body: { tree: [] } } : undefined),
+    ]);
+    const gh = new GitHubProvider({ baseUrl: 'https://twin.test', fetchImpl });
+    expect((await gh.getDiff('r/r', 'a', 'b')).files).toEqual([]);
+  });
+
+  it('falls back to merged pull requests when commits/{sha}/pulls is empty', async () => {
+    const { fetchImpl } = stubFetch([
+      (u) => (u.includes('/commits/abc/pulls') ? { body: [] } : undefined),
+      (u) =>
+        u.includes('/pulls?') || u.endsWith('/pulls')
+          ? {
+              body: [
+                { number: 1, title: 'Discount codes', body: null, head: { ref: 'f', sha: 'zzz' },
+                  base: { ref: 'main' }, html_url: 'u', state: 'closed', merged: true, merge_commit_sha: 'abc' },
+                { number: 2, title: 'Unrelated', body: null, head: { ref: 'g', sha: 'yyy' },
+                  base: { ref: 'main' }, html_url: 'u2', state: 'open' },
+              ],
+            }
+          : undefined,
+    ]);
+    const gh = new GitHubProvider({ baseUrl: 'https://twin.test', fetchImpl });
+    const prs = await gh.listPullRequestsForCommit('acme/checkout-api', 'abc');
+
+    expect(prs).toHaveLength(1);
+    expect(prs[0]!.number).toBe(1);
+  });
+});

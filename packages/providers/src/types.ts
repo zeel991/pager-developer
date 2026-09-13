@@ -46,6 +46,8 @@ export interface SourceControlProvider {
   getCommit(repo: string, sha: string): Promise<Commit>;
   getDiff(repo: string, baseSha: string, headSha: string): Promise<Diff>;
   listCommitsBetween(repo: string, baseSha: string, headSha: string): Promise<Commit[]>;
+  /** Most recent commits on a ref, newest first. Used to resolve what is deployed. */
+  listCommits(repo: string, opts?: { ref?: string; limit?: number }): Promise<Commit[]>;
   getPullRequest(repo: string, number: number): Promise<PullRequest>;
   listPullRequestsForCommit(repo: string, sha: string): Promise<PullRequest[]>;
   getFile(repo: string, ref: string, path: string): Promise<string | null>;
