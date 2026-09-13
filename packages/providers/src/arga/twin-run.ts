@@ -39,6 +39,7 @@ export interface ArgaLike {
       ttlMinutes?: number;
       scenarioId?: string;
       scenarioPrompt?: string;
+      scenarioGenerationMode?: 'fast' | 'thorough';
       public?: boolean;
     }): Promise<{ runId: string }>;
     getStatus(runId: string): Promise<{
@@ -115,6 +116,7 @@ export class TwinRun {
       ttlMinutes?: number;
       scenarioId?: string;
       scenarioPrompt?: string;
+      scenarioGenerationMode?: 'fast' | 'thorough';
       public?: boolean;
     },
     opts: WaitOptions = {},

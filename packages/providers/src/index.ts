@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './http.js';
 export * from './registry.js';
 export * from './arga/twin-run.js';
+export * from './arga/client.js';
 export * from './github/github-provider.js';
 export * from './datadog/datadog-provider.js';
 export * from './slack/slack-provider.js';

@@ -11,8 +11,8 @@
  * It deliberately reports failures as failures rather than degrading quietly.
  */
 
-import { Arga } from 'arga-sdk';
 import { Lemma } from '@uselemma/tracing';
+import { createArgaClient } from '@pager/providers';
 
 const REQUIRED_TWINS = ['github', 'datadog', 'slack'];
 
@@ -32,7 +32,10 @@ async function checkArga(): Promise<void> {
     return;
   }
 
-  const client = new Arga({ apiKey });
+  const client = createArgaClient({
+    apiKey,
+    ...(process.env.ARGA_BASE_URL ? { baseUrl: process.env.ARGA_BASE_URL } : {}),
+  });
   let available: Set<string>;
   try {
     const twins = await client.twins.list();

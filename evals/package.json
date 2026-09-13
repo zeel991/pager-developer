@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "preflight": "node --env-file-if-exists=../.env --experimental-strip-types src/preflight.ts"
+    "preflight": "node --env-file-if-exists=../.env --experimental-strip-types src/preflight.ts",
+    "provision": "node --env-file-if-exists=../.env --experimental-strip-types src/provision.ts"
   },
   "dependencies": {
     "@pager/agents": "workspace:*",
