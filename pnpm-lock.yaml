@@ -233,6 +233,10 @@ importers:
       zod:
         specifier: ^4.1.5
         version: 4.6.2
+    devDependencies:
+      '@pager/twin-local':
+        specifier: workspace:*
+        version: link:../twin-local
 
   packages/core:
     dependencies:

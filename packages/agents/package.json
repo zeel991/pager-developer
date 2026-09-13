@@ -21,5 +21,8 @@
     "@pager/observability": "workspace:*",
     "@pager/providers": "workspace:*",
     "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@pager/twin-local": "workspace:*"
   }
 }
