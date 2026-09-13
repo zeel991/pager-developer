@@ -20,6 +20,7 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.3.0",
     "eslint": "^9.36.0",
     "typescript": "^5.9.2",
