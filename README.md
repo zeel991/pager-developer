@@ -15,11 +15,11 @@ writes the postmortem the next morning.
 Pager Developer does all of that, and stops exactly where a human should take over.
 
 <p align="center">
-  <a href="docs/demo.mp4">
-    <img src="docs/demo-poster.png" alt="Watch the demo" width="100%"/>
+  <a href="https://youtu.be/2Bos0VkR3jg">
+    <img src="docs/demo-poster.png" alt="Watch the 2-minute demo" width="100%"/>
   </a>
   <br/>
-  <sub><b><a href="docs/demo.mp4">▶ Watch the 2-minute demo</a></b> — a real bug, found and fixed end to end</sub>
+  <sub><b><a href="https://youtu.be/2Bos0VkR3jg">▶ Watch the 2-minute demo</a></b> — a real bug, found and fixed end to end</sub>
 </p>
 
 <p align="center">
