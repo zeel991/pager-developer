@@ -37,6 +37,7 @@ account, watched by an agent with real GitHub credentials.
 | **Watched service** | `checkout-api` on Render, reporting its own build revision |
 | **Pull requests opened autonomously** | [#5](https://github.com/he11world/test/pull/5), [#9](https://github.com/he11world/test/pull/9), [#12](https://github.com/he11world/test/pull/12) — merged by a human |
 | **Merge control** | a button in Slack; the approval is recorded against the person who clicked it |
+| **Postmortem** | [the write-up it filed](https://app.notion.com/p/INC-E505D848ED42-checkout-api-incident-write-up-3da562d1750581ed87bdd3c1d6203be0) for the incident in the demo — measured impact, measured recovery |
 
 **The test that matters.** A bug was planted in the checkout service and deployed
 without telling the agent what it was, where it was, or that anything had changed.
@@ -47,7 +48,19 @@ before the patch and passed after it, and opened
 [#12](https://github.com/he11world/test/pull/12).
 
 The bug had two failure modes — a missing `destination`, and `rateFor()` returning
-`undefined` for an unsupported country. The patch guarded both.
+`undefined` for an unsupported country. The patch guarded both. The second produced
+no logs of its own; it was found by reading the code at the deployed revision.
+
+Measured either side of the human merge, from Datadog:
+
+| Window | `/orders` requests | HTTP 500 | Error rate |
+| --- | --- | --- | --- |
+| Deploy → merge | 684 | 440 | **64.3%** |
+| After merge | 1,512 | 0 | **0%** |
+
+Traffic after the fix was more than double the incident window, so zero errors is not
+zero traffic. The [full write-up](https://app.notion.com/p/INC-E505D848ED42-checkout-api-incident-write-up-3da562d1750581ed87bdd3c1d6203be0)
+is the postmortem the agent files to Notion.
 
 ## The loop, end to end
 
