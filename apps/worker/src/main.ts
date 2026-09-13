@@ -105,6 +105,7 @@ interface WorkerStatus {
     intervalSeconds: number;
     readOnly: boolean;
     mergeButton: boolean;
+    autonomy: string;
   } | null;
 }
 
@@ -131,6 +132,7 @@ function serveStatus(port: number, config: WorkerConfig, sourceControl: SourceCo
       void handleSlackInteraction(request, response, {
         signingSecret: config.slackSigningSecret,
         enabled: config.mergeButton,
+        autonomy: config.autonomy,
         repository: config.repository,
         sourceControl,
         approvals: status.approvals,
@@ -368,6 +370,7 @@ async function main(): Promise<void> {
     intervalSeconds: config.intervalSeconds,
     readOnly: config.readOnly,
     mergeButton: config.mergeButton,
+    autonomy: config.autonomy,
   };
 
   const handled = new Set<string>();

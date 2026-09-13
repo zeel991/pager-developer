@@ -8,7 +8,7 @@ import {
   decodeMergeAction,
   verifySlackSignature,
 } from '@pager/agents';
-import { PermissionDeniedError } from '@pager/core';
+import { PermissionDeniedError, type AutonomyLevel } from '@pager/core';
 import type { SourceControlProvider } from '@pager/providers';
 
 /**
@@ -38,6 +38,8 @@ export interface MergeApproval {
 export interface MergeEndpointDeps {
   signingSecret: string;
   enabled: boolean;
+  /** The operator's standing grant. Merging refuses below L4. */
+  autonomy: AutonomyLevel;
   repository: string;
   sourceControl: SourceControlProvider;
   /** Recorded approvals, newest first. Shown on the dashboard. */
@@ -57,6 +59,22 @@ async function readBody(request: IncomingMessage, maxBytes = 256_000): Promise<s
 function reply(response: ServerResponse, status: number, text: string): void {
   response.writeHead(status, { 'content-type': 'application/json' });
   response.end(JSON.stringify({ response_type: 'in_channel', replace_original: false, text }));
+}
+
+/**
+ * Replace the message the button lived on.
+ *
+ * Once a pull request is merged the button is not merely useless, it is misleading:
+ * it invites a click that can only fail, and it leaves the channel showing an
+ * outstanding decision that was in fact taken. The outcome replaces the offer.
+ */
+function replaceMessage(response: ServerResponse, blocks: unknown[], fallback: string): void {
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(JSON.stringify({ replace_original: true, text: fallback, blocks }));
+}
+
+function outcomeBlocks(lines: string[]): unknown[] {
+  return [{ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } }];
 }
 
 export async function handleSlackInteraction(
@@ -139,10 +157,33 @@ export async function handleSlackInteraction(
     outcome: 'approved',
   };
 
-  // 4. Authorise. L4 is required and the approval satisfies the approval
-  //    requirement; neither substitutes for the other.
+  // 4. Is the pull request still open? A message stays in the channel long after
+  //    the decision it offered was taken, and clicking an old one must not be an
+  //    error the person has to interpret — it means someone already decided.
   try {
-    assertMergeAllowed('L4', approval.id);
+    const current = await deps.sourceControl.getPullRequest(target.repository, target.pullRequest);
+    if (current.state !== 'open') {
+      approval.outcome = `no action: already ${current.state}`;
+      deps.approvals.unshift(approval);
+      replaceMessage(
+        response,
+        outcomeBlocks([
+          `:white_check_mark: *#${target.pullRequest} is already ${current.state}.*`,
+          `Nothing to do — someone decided this already.`,
+        ]),
+        `#${target.pullRequest} is already ${current.state}.`,
+      );
+      return;
+    }
+  } catch (err) {
+    deps.log(`could not read #${target.pullRequest}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 5. Authorise. The autonomy level is the operator's standing grant and the
+  //    approval is this person's decision about this pull request; neither
+  //    substitutes for the other, so both are required.
+  try {
+    assertMergeAllowed(deps.autonomy, approval.id);
   } catch (err) {
     approval.outcome = `refused: ${err instanceof PermissionDeniedError ? err.reason : 'not permitted'}`;
     deps.approvals.unshift(approval);
@@ -150,7 +191,7 @@ export async function handleSlackInteraction(
     return;
   }
 
-  // 5. Act.
+  // 6. Act.
   try {
     const merged = await deps.sourceControl.mergePullRequest(target.repository, target.pullRequest, {
       method: 'squash',
@@ -159,11 +200,16 @@ export async function handleSlackInteraction(
     approval.outcome = merged.state === 'merged' ? 'merged' : `not merged (${merged.state})`;
     deps.approvals.unshift(approval);
     deps.log(`#${target.pullRequest} merged by ${approvedBy} — approval ${approval.id}`);
-    reply(
+    // The button is gone: the offer has been taken, and leaving it would invite a
+    // click that can only fail.
+    replaceMessage(
       response,
-      200,
-      `:white_check_mark: *#${target.pullRequest} merged by ${approvedBy}.* ` +
-        `Approval ${approval.id} recorded. Pager Developer did not decide this.`,
+      outcomeBlocks([
+        `:white_check_mark: *#${target.pullRequest} merged by ${approvedBy}.*`,
+        `Approval \`${approval.id}\` recorded against them. Pager Developer did not decide this.`,
+        `<${merged.url}|View the pull request>`,
+      ]),
+      `#${target.pullRequest} merged by ${approvedBy}.`,
     );
   } catch (err) {
     // GitHub answers 405 when its own rules refuse the merge — conflicts, a failing

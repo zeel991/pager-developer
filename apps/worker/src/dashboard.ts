@@ -62,6 +62,7 @@ interface Renderable {
     intervalSeconds: number;
     readOnly: boolean;
     mergeButton: boolean;
+    autonomy: string;
   } | null;
 }
 
@@ -203,7 +204,7 @@ export function renderDashboard(s: Renderable): string {
     <div><div class="k">repository</div><div class="v">${esc(cfg?.repository ?? '—')}</div></div>
     <div><div class="k">model</div><div class="v">${esc(cfg?.model ?? '—')}</div></div>
     <div><div class="k">checks every</div><div class="v">${esc(cfg?.intervalSeconds ?? '—')}s</div></div>
-    <div><div class="k">autonomy</div><div class="v">${cfg?.readOnly ? 'L2 — may not open PRs' : 'L3 — may open PRs'}</div></div>
+    <div><div class="k">autonomy</div><div class="v">${esc(cfg?.autonomy ?? '—')}${cfg?.autonomy === 'L4' || cfg?.autonomy === 'L5' ? ' — merging permitted with an approval' : ' — merging refused'}</div></div>
     <div><div class="k">merge button</div><div class="v">${cfg?.mergeButton ? 'offered in Slack' : 'off'}</div></div>
   </div>
 

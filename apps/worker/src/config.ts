@@ -6,6 +6,8 @@
  * that refuses to start: the first failure would happen at the moment it mattered.
  */
 
+import { AUTONOMY_LEVELS, type AutonomyLevel } from '@pager/core';
+
 export interface WorkerConfig {
   /** The service as Datadog knows it. */
   service: string;
@@ -39,6 +41,15 @@ export interface WorkerConfig {
    */
   mergeButton: boolean;
   slackSigningSecret: string;
+  /**
+   * The operator's standing decision about what this worker may do at all.
+   *
+   * Read from configuration rather than assumed, because merging asserts against it
+   * and a check whose input the code supplies itself is not a check. L3 — open a
+   * pull request — is the default; merging needs L4 and will refuse below it however
+   * the button is configured.
+   */
+  autonomy: AutonomyLevel;
 }
 
 export class WorkerConfigError extends Error {
@@ -81,7 +92,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     readOnly: env.PAGER_READ_ONLY === '1',
     mergeButton: env.PAGER_ENABLE_MERGE_BUTTON === '1' && Boolean(env.SLACK_SIGNING_SECRET?.trim()),
     slackSigningSecret: env.SLACK_SIGNING_SECRET?.trim() ?? '',
+    autonomy: (env.PAGER_AUTONOMY_LEVEL?.trim() || 'L3') as AutonomyLevel,
   };
+
+  if (!(AUTONOMY_LEVELS as readonly string[]).includes(config.autonomy)) {
+    missing.push(`PAGER_AUTONOMY_LEVEL (got "${config.autonomy}", expected one of ${AUTONOMY_LEVELS.join(', ')})`);
+  }
 
   // Say so rather than failing silently: asking for the button without the secret
   // is a configuration mistake that would otherwise look like the button "not
@@ -105,6 +121,13 @@ export function describeConfig(config: WorkerConfig): string {
     `model          ${config.model}`,
     `interval       ${config.intervalSeconds}s`,
     `mode           ${config.readOnly ? 'READ ONLY — will not open pull requests' : 'may open pull requests for human review'}`,
-    `merge button   ${config.mergeButton ? 'OFFERED — a human click merges, recorded against them' : 'off — merging happens on GitHub'}`,
+    `autonomy       ${config.autonomy}`,
+    `merge button   ${
+      !config.mergeButton
+        ? 'off — merging happens on GitHub'
+        : config.autonomy === 'L4' || config.autonomy === 'L5'
+          ? 'OFFERED — a human click merges, recorded against them'
+          : `offered, but merging will be REFUSED at ${config.autonomy}: it needs L4`
+    }`,
   ].join('\n  ');
 }

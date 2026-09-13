@@ -171,8 +171,9 @@ export function mergeButtonBlocks(input: {
         {
           type: 'mrkdwn',
           text:
-            'Merging requires autonomy L4 and records an approval against the clicker. ' +
-            'Pager Developer cannot merge on its own at any level.',
+            'The operator set this deployment to L4, which permits merging; your click ' +
+            'is the approval, recorded against you. Pager Developer cannot merge on its ' +
+            'own at any level.',
         },
       ],
     },

@@ -150,3 +150,32 @@ describe('merge action payload', () => {
     expect(button.confirm).toBeDefined();
   });
 });
+
+/**
+ * The autonomy level must come from configuration, not from the code asserting it.
+ *
+ * The button's own text told a reader that merging "requires autonomy L4". The
+ * endpoint was passing the literal 'L4' to the check, so the level was supplied by
+ * the thing being checked — the assertion could never fail on autonomy, and the
+ * message described a safeguard that was not there.
+ */
+describe('autonomy is an input, not an assumption', () => {
+  it('refuses at every level below L4, with an approval present', () => {
+    for (const level of ['L0', 'L1', 'L2', 'L3'] as const) {
+      expect(() => assertMergeAllowed(level, 'approval-1')).toThrow(PermissionDeniedError);
+    }
+  });
+
+  it('permits at L4 and above, with an approval present', () => {
+    for (const level of ['L4', 'L5'] as const) {
+      expect(() => assertMergeAllowed(level, 'approval-1')).not.toThrow();
+    }
+  });
+
+  it('does not claim a safeguard the caller supplies for itself', () => {
+    // The regression: a caller passing a constant can never be refused on autonomy.
+    // This asserts the function is sensitive to its argument at all.
+    expect(() => assertMergeAllowed('L3', 'approval-1')).toThrow();
+    expect(() => assertMergeAllowed('L4', 'approval-1')).not.toThrow();
+  });
+});
