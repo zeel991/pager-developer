@@ -117,7 +117,7 @@ export function toBlocks(content: string): unknown[] {
           ...chunked(line.trim().replace(/^[-*]\s+/, ''), (chunk) => ({
             object: 'block',
             type: 'bulleted_list_item',
-            bulleted_list_item: { rich_text: [{ type: 'text', text: { content: chunk } }] },
+            bulleted_list_item: { rich_text: toRichText(chunk) },
           })),
         );
       }
@@ -130,7 +130,7 @@ export function toBlocks(content: string): unknown[] {
       blocks.push({
         object: 'block',
         type: `heading_${level}`,
-        [`heading_${level}`]: { rich_text: [{ type: 'text', text: { content: heading[2]!.slice(0, MAX_BLOCK_TEXT) } }] },
+        [`heading_${level}`]: { rich_text: toRichText(heading[2]!.slice(0, MAX_BLOCK_TEXT)) },
       });
       continue;
     }
@@ -139,11 +139,47 @@ export function toBlocks(content: string): unknown[] {
       ...chunked(trimmed, (chunk) => ({
         object: 'block',
         type: 'paragraph',
-        paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] },
+        paragraph: { rich_text: toRichText(chunk) },
       })),
     );
   }
   return blocks;
+}
+
+/**
+ * Inline markdown to Notion rich text.
+ *
+ * Notion does not parse markup inside a text node: a block whose content is the
+ * string "**UNVERIFIABLE**" renders with the asterisks showing, and a markdown
+ * link renders as literal brackets. Both appear in the incident write-up, so the
+ * emphasis and the link to the pull request have to be built as annotated spans.
+ *
+ * Deliberately limited to bold, inline code and links — the three the write-up
+ * actually uses. A fuller markdown parser would be more surface than this needs.
+ */
+const INLINE = /\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;
+
+export function toRichText(text: string): unknown[] {
+  const out: unknown[] = [];
+  const push = (content: string, annotations?: Record<string, boolean>, link?: string) => {
+    if (content === '') return;
+    out.push({
+      type: 'text',
+      text: { content, ...(link ? { link: { url: link } } : {}) },
+      ...(annotations ? { annotations } : {}),
+    });
+  };
+
+  let last = 0;
+  for (const m of text.matchAll(INLINE)) {
+    push(text.slice(last, m.index));
+    if (m[1] !== undefined) push(m[1], undefined, m[2]);
+    else if (m[3] !== undefined) push(m[3], { bold: true });
+    else if (m[4] !== undefined) push(m[4], { code: true });
+    last = m.index + m[0].length;
+  }
+  push(text.slice(last));
+  return out.length > 0 ? out : [{ type: 'text', text: { content: text } }];
 }
 
 /** Split text that exceeds Notion's per-block limit across several blocks. */

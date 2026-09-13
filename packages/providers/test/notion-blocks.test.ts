@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toBlocks } from '../src/notion/notion-provider.js';
+import { toBlocks, toRichText } from '../src/notion/notion-provider.js';
 
 /**
  * A postmortem is mostly headings and lists. Notion has block types for both, and
@@ -39,5 +39,48 @@ describe('toBlocks', () => {
 
   it('drops blank stretches instead of emitting empty blocks', () => {
     expect(toBlocks('one\n\n\n\n\ntwo')).toHaveLength(2);
+  });
+});
+
+/**
+ * Notion renders a text node literally. The write-up contains bold verdicts, an
+ * inline-code root cause and a markdown link to the pull request, so each has to
+ * be built as an annotated span rather than handed over as markup.
+ */
+describe('toRichText', () => {
+  const spans = (md: string) =>
+    toRichText(md).map((s) => {
+      const t = s as { text: { content: string; link?: { url: string } }; annotations?: Record<string, boolean> };
+      return [t.text.content, t.annotations?.bold ? 'b' : t.annotations?.code ? 'c' : t.text.link ? t.text.link.url : ''];
+    });
+
+  it('turns ** into a bold span, not asterisks on screen', () => {
+    expect(spans('**RECOVERED** — signals are back')).toEqual([
+      ['RECOVERED', 'b'],
+      [' — signals are back', ''],
+    ]);
+  });
+
+  it('turns a markdown link into a real link', () => {
+    expect(spans('See [#12](https://example.com/12) for the fix')).toEqual([
+      ['See ', ''],
+      ['#12', 'https://example.com/12'],
+      [' for the fix', ''],
+    ]);
+  });
+
+  it('marks inline code', () => {
+    expect(spans('`rateFor()` returned undefined')).toEqual([
+      ['rateFor()', 'c'],
+      [' returned undefined', ''],
+    ]);
+  });
+
+  it('leaves plain prose as a single span', () => {
+    expect(spans('nothing special here')).toEqual([['nothing special here', '']]);
+  });
+
+  it('never emits an empty span', () => {
+    expect(toRichText('**bold**')).toHaveLength(1);
   });
 });
