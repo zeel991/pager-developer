@@ -50,16 +50,17 @@ export interface ProductionAlert {
 }
 
 export interface WatchOptions {
+  /** Hard cap on how far back the evidence window may reach from now. */
+  maxWindowMinutes?: number;
   /** How far back from the monitor transition to read logs. */
   lookbackMinutes?: number;
   /** How far forward. Alerts usually fire a few minutes after onset. */
-  lookaheadMinutes?: number;
   logLimit?: number;
   now?: () => Date;
 }
 
 const DEFAULT_LOOKBACK = 15;
-const DEFAULT_LOOKAHEAD = 10;
+const DEFAULT_MAX_WINDOW = 45;
 
 /**
  * Pull known failure modes out of runbook text.
@@ -138,9 +139,31 @@ export class ProductionWatcher {
     if (!alerting) return null;
 
     const firedAt = alerting.transitionedAt ?? now();
+    const at = now();
+
+    /**
+     * The window always runs up to NOW, never to a fixed offset after the monitor
+     * fired.
+     *
+     * A monitor that is still in ALERT is telling you the failure is happening
+     * now. Ending the window shortly after it first fired means that on a monitor
+     * which has been red for an hour — or which never cleared across a deployment
+     * — every error the service is currently producing falls outside the evidence,
+     * and the investigation reasons about a failure that has since been fixed or
+     * replaced by a different one. Observed exactly that: a monitor stuck at an old
+     * transition time led to four investigations of a defect that was no longer
+     * deployed, while the live failure went unexamined.
+     *
+     * The lookback still reaches back before the transition to catch onset, but is
+     * bounded so a long-running alert cannot turn into an unbounded query.
+     */
+    const lookbackMs = (opts.lookbackMinutes ?? DEFAULT_LOOKBACK) * 60_000;
+    const maxSpanMs = (opts.maxWindowMinutes ?? DEFAULT_MAX_WINDOW) * 60_000;
+    const desiredFrom = new Date(firedAt.getTime() - lookbackMs);
+    const earliestAllowed = new Date(at.getTime() - maxSpanMs);
     const logWindow: TimeRange = {
-      from: new Date(firedAt.getTime() - (opts.lookbackMinutes ?? DEFAULT_LOOKBACK) * 60_000),
-      to: new Date(firedAt.getTime() + (opts.lookaheadMinutes ?? DEFAULT_LOOKAHEAD) * 60_000),
+      from: desiredFrom > earliestAllowed ? desiredFrom : earliestAllowed,
+      to: at,
     };
 
     const logsCall = await ctx.tool(

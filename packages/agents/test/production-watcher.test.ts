@@ -17,6 +17,9 @@ afterEach(async () => {
   await server?.stop();
 });
 
+/** The fixture's wall clock. The window now ends at now, so tests must fix it. */
+const FIXTURE_NOW = () => new Date('2026-09-13T15:10:00Z');
+
 function watcher(withRunbooks = true) {
   const observability = new DatadogProvider({ baseUrl: endpoints.datadog });
   const knowledge = withRunbooks
@@ -61,7 +64,7 @@ describe('ProductionWatcher', () => {
     const { tracer: t } = tracer();
 
     const alert = await t.run('ProductionWatcher', {}, (ctx) =>
-      watcher().check(ctx, 'checkout-api'),
+      watcher().check(ctx, 'checkout-api', { now: FIXTURE_NOW }),
     );
 
     expect(alert).not.toBeNull();
@@ -78,7 +81,7 @@ describe('ProductionWatcher', () => {
     const { tracer: t } = tracer();
 
     const alert = await t.run('ProductionWatcher', {}, (ctx) =>
-      watcher().check(ctx, 'checkout-api'),
+      watcher().check(ctx, 'checkout-api', { now: FIXTURE_NOW }),
     );
 
     expect(alert!.primary!.errorType).toBe('PaymentGatewayError');
@@ -93,7 +96,7 @@ describe('ProductionWatcher', () => {
     const { tracer: t } = tracer();
 
     const alert = await t.run('ProductionWatcher', {}, (ctx) =>
-      watcher(false).check(ctx, 'checkout-api'),
+      watcher(false).check(ctx, 'checkout-api', { now: FIXTURE_NOW }),
     );
 
     expect(alert!.escalate).toBe(true);
@@ -105,7 +108,7 @@ describe('ProductionWatcher', () => {
     const { tracer: t } = tracer();
 
     const alert = await t.run('ProductionWatcher', {}, (ctx) =>
-      watcher().check(ctx, 'checkout-api'),
+      watcher().check(ctx, 'checkout-api', { now: FIXTURE_NOW }),
     );
 
     expect(alert).not.toBeNull();
@@ -126,11 +129,58 @@ describe('ProductionWatcher', () => {
   it('records every provider call it made', async () => {
     await start(INC_001);
     const { sink, tracer: t } = tracer();
-    await t.run('ProductionWatcher', {}, (ctx) => watcher().check(ctx, 'checkout-api'));
+    await t.run('ProductionWatcher', {}, (ctx) => watcher().check(ctx, 'checkout-api', { now: FIXTURE_NOW }));
 
     const names = sink.toolCalls.map((c) => c.toolName);
     expect(names).toContain('datadog.listMonitors');
     expect(names).toContain('datadog.queryLogs');
     expect(sink.failedToolCalls()).toHaveLength(0);
+  });
+});
+
+/**
+ * The evidence window must always reach the present.
+ *
+ * A monitor still in ALERT is saying the failure is happening now. Ending the
+ * window a fixed interval after it first fired means that on a monitor red for an
+ * hour — or one that never cleared across a deployment — every error the service is
+ * currently producing falls outside the evidence. Observed live: a stuck transition
+ * timestamp led to four investigations of a defect that was no longer deployed,
+ * while the live failure went unexamined.
+ */
+describe('evidence window', () => {
+  it('runs up to now even when the monitor fired long ago', async () => {
+    await start(INC_001);
+    const { tracer: t } = tracer();
+    const now = new Date('2026-09-13T16:00:00Z');
+
+    const alert = await t.run('w', {}, (ctx) => watcher().check(ctx, 'checkout-api', { now: () => now }));
+    expect(alert).not.toBeNull();
+    // Not firedAt + a fixed lookahead, which ended well before now.
+    expect(alert!.logWindow.to.toISOString()).toBe(now.toISOString());
+    expect(alert!.logWindow.to.getTime()).toBeGreaterThan(alert!.firedAt.getTime());
+  });
+
+  it('bounds how far back a long-running alert may reach', async () => {
+    await start(INC_001);
+    const { tracer: t } = tracer();
+    const now = new Date('2026-09-13T20:00:00Z');
+
+    const alert = await t.run('w', {}, (ctx) =>
+      watcher().check(ctx, 'checkout-api', { now: () => now, maxWindowMinutes: 45 }),
+    );
+    const spanMinutes = (alert!.logWindow.to.getTime() - alert!.logWindow.from.getTime()) / 60_000;
+    expect(spanMinutes).toBeLessThanOrEqual(45);
+  });
+
+  it('still reaches back before the transition to catch onset', async () => {
+    await start(INC_001);
+    const { tracer: t } = tracer();
+    const now = new Date('2026-09-13T14:45:00Z');
+
+    const alert = await t.run('w', {}, (ctx) =>
+      watcher().check(ctx, 'checkout-api', { now: () => now, lookbackMinutes: 15 }),
+    );
+    expect(alert!.logWindow.from.getTime()).toBeLessThan(alert!.firedAt.getTime());
   });
 });

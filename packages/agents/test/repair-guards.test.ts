@@ -73,6 +73,8 @@ async function harness(generator: PatchGenerator) {
     knowledge: new NotionProvider({ baseUrl: e.notion, token: 't', parentPageId: 'runbook-checkout' }),
     email: null,
     tracer: new AgentTracer({ sink, lemma: null }),
+    // The evidence window ends at the present, so seeded telemetry needs a clock.
+    now: () => new Date('2026-09-13T15:10:00Z'),
     patchGenerator: generator,
   });
 

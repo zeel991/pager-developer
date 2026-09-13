@@ -158,10 +158,14 @@ export class DatadogProvider implements ObservabilityProvider {
         to: range.to.toISOString(),
       },
       page: { limit: opts.limit ?? 100 },
-      sort: 'timestamp',
+      // Newest first. The limit is a budget, and it must be spent on the most
+      // recent failures: ascending order spends it on the OLDEST events in the
+      // window, so a service that has been failing for a while returns only its
+      // earliest errors and the ones it is producing right now are invisible.
+      sort: '-timestamp',
     });
 
-    return (res.data ?? []).map((d) => {
+    const entries = (res.data ?? []).map((d) => {
       const a = d.attributes ?? {};
       const nested = a.attributes ?? {};
       return {
@@ -173,6 +177,9 @@ export class DatadogProvider implements ObservabilityProvider {
         attributes: nested,
       };
     });
+    // Queried newest-first to spend the limit on current failures; returned
+    // oldest-first because every consumer reads a log window as a narrative.
+    return entries.sort((a, b) => a.at.getTime() - b.at.getTime());
   }
 
   /**

@@ -82,6 +82,8 @@ async function build(fixture: Parameters<typeof seedFromFixture>[0], generator: 
     knowledge: new NotionProvider({ baseUrl: e.notion, token: 't', parentPageId: 'runbook-checkout' }),
     email: new ResendProvider({ baseUrl: e.resend, apiKey: 're_t', from: 'p@acme.dev' }),
     tracer: new AgentTracer({ sink, lemma: null }),
+    // The evidence window ends at the present, so seeded telemetry needs a clock.
+    now: () => new Date('2026-09-13T15:10:00Z'),
     patchGenerator,
   });
 

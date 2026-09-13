@@ -132,6 +132,14 @@ export interface WorkflowDeps {
   persistence?: WorkflowPersistence;
   /** Governs which write boundaries the workflow may cross. Defaults to L3. */
   autonomy?: AutonomyLevel;
+  /**
+   * The clock.
+   *
+   * Injectable because the evidence window now ends at the present, so a test
+   * running against seeded telemetry has to be able to say when "the present" is.
+   * Production leaves it alone.
+   */
+  now?: () => Date;
 }
 
 /**
@@ -337,7 +345,7 @@ export class IncidentWorkflow {
       // Detection happens before an incident exists, so this run is linked to it
       // afterwards. Otherwise the incident page would omit the run that opened it.
       preIncidentRuns.push(ctx.agentRunId);
-      return watcher.check(ctx, input.service);
+      return watcher.check(ctx, input.service, this.deps.now ? { now: this.deps.now } : {});
     });
     result.alert = alert;
 
