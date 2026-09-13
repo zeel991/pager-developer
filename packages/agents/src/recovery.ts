@@ -25,11 +25,29 @@ export interface MetricComparison {
   reason: string;
 }
 
+/**
+ * What the evidence actually supports.
+ *
+ * The three are genuinely different and were previously collapsed into one boolean,
+ * which made the system say "signals have not returned to baseline" about a service
+ * whose signals were never measured. That is a false statement about production, and
+ * it is exactly the conflation this project exists to avoid: absent data is not
+ * contrary data.
+ *
+ *  RECOVERED      — metrics were compared and came back toward baseline.
+ *  NOT_RECOVERED  — metrics were compared and are still elevated. The incident burns.
+ *  UNVERIFIABLE   — nothing could be compared. Says nothing either way.
+ */
+export type RecoveryVerdict = 'RECOVERED' | 'NOT_RECOVERED' | 'UNVERIFIABLE';
+
 export interface RecoveryVerification {
   comparisons: MetricComparison[];
   monitorsRecovered: boolean | null;
   /** True only when every compared metric recovered and no monitor is still alerting. */
   recovered: boolean;
+  verdict: RecoveryVerdict;
+  /** Why the verdict is what it is, in one sentence a human can act on. */
+  summary: string;
   /** Metrics that could not be compared. Their absence blocks a recovery claim. */
   unverified: { metric: MetricName; reason: string }[];
 }
@@ -180,14 +198,83 @@ export class RecoveryVerifier {
 
     const everyMetricRecovered =
       comparisons.length > 0 && comparisons.every((c) => c.recovered);
+    // Unverified metrics block the claim. Absence of evidence is not recovery.
+    const recovered =
+      everyMetricRecovered && unverified.length === 0 && monitorsRecovered !== false;
 
-    return {
+    const { verdict, summary } = decide({
       comparisons,
-      monitorsRecovered,
-      // Unverified metrics block the claim. Absence of evidence is not recovery.
-      recovered:
-        everyMetricRecovered && unverified.length === 0 && monitorsRecovered !== false,
       unverified,
+      monitorsRecovered,
+      everyMetricRecovered,
+      recovered,
+    });
+
+    return { comparisons, monitorsRecovered, recovered, verdict, summary, unverified };
+  }
+}
+
+/**
+ * Turn the measurements into a verdict and a sentence.
+ *
+ * The distinction that matters is between a signal that stayed bad and a signal
+ * nobody could read. Both leave the incident open, but only the first is a
+ * statement about production — and a human reading the second needs to know they
+ * are looking at a gap in instrumentation, not at a fix that failed.
+ *
+ * A cleared monitor is real evidence even with no metrics behind it: the condition
+ * that fired has stopped firing. It is reported as corroboration, never promoted to
+ * a recovery on its own.
+ */
+function decide(input: {
+  comparisons: MetricComparison[];
+  unverified: { metric: MetricName; reason: string }[];
+  monitorsRecovered: boolean | null;
+  everyMetricRecovered: boolean;
+  recovered: boolean;
+}): { verdict: RecoveryVerdict; summary: string } {
+  const { comparisons, unverified, monitorsRecovered, everyMetricRecovered, recovered } = input;
+
+  if (recovered) {
+    return {
+      verdict: 'RECOVERED',
+      summary:
+        `All ${comparisons.length} compared metric(s) returned toward baseline` +
+        (monitorsRecovered === true ? ' and no monitor is still alerting.' : '.'),
     };
   }
+
+  // Nothing was measured at all. This says nothing about whether the fix worked.
+  if (comparisons.length === 0) {
+    const why = unverified[0]?.reason ?? 'no metric data was available';
+    return {
+      verdict: 'UNVERIFIABLE',
+      summary:
+        `Recovery could not be verified: no metric could be compared (${why}). ` +
+        (monitorsRecovered === true
+          ? 'The alerting monitor has cleared, which is corroborating but not sufficient on its own. '
+          : monitorsRecovered === false
+            ? 'A monitor is still alerting. '
+            : '') +
+        `This is a gap in instrumentation, not evidence that the fix failed.`,
+    };
+  }
+
+  // Something was measured and it is still bad. This IS a statement about production.
+  const stillBad = comparisons.filter((c) => !c.recovered).map((c) => c.metric);
+  if (!everyMetricRecovered) {
+    return {
+      verdict: 'NOT_RECOVERED',
+      summary: `Still elevated after the fix shipped: ${stillBad.join(', ')}.`,
+    };
+  }
+  if (monitorsRecovered === false) {
+    return { verdict: 'NOT_RECOVERED', summary: 'A monitor is still alerting despite the metrics settling.' };
+  }
+  return {
+    verdict: 'UNVERIFIABLE',
+    summary:
+      `Some metrics recovered but ${unverified.length} could not be compared ` +
+      `(${unverified.map((u) => u.metric).join(', ')}), so recovery is not established.`,
+  };
 }

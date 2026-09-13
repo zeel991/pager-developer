@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { ToolDefinition } from '@pager/core';
 import { AuditRepository, createDatabase, organizations, type DatabaseHandle } from '@pager/db';
+import { AgentTracer, InMemorySink } from '@pager/observability';
 import { PolicyEngine, formatApprovalRequest, type ApprovalRecord } from '../src/approval.js';
-import { compareRecovery } from '../src/recovery.js';
+import { RecoveryVerifier, compareRecovery } from '../src/recovery.js';
 
 const MIGRATIONS = join(import.meta.dirname, '..', '..', 'db', 'migrations');
 
@@ -180,5 +181,82 @@ describe('recovery comparison', () => {
   it('treats an overshoot below baseline as recovered', () => {
     const c = compareRecovery('error_rate', 0.004, 0.178, 0.001);
     expect(c.recovered).toBe(true);
+  });
+});
+
+/**
+ * A signal that stayed bad and a signal nobody could read are different things.
+ *
+ * They were collapsed into one boolean, which made the system state "signals have
+ * not returned to baseline" about a service whose signals were never measured —
+ * a false claim about production, and the exact conflation this project exists to
+ * avoid. Absent data is not contrary data.
+ */
+describe('recovery verdict', () => {
+  const windows = {
+    baselineWindow: { from: new Date('2026-09-14T10:00:00Z'), to: new Date('2026-09-14T10:30:00Z') },
+    incidentWindow: { from: new Date('2026-09-14T10:30:00Z'), to: new Date('2026-09-14T11:00:00Z') },
+    postRemediationWindow: { from: new Date('2026-09-14T11:00:00Z'), to: new Date('2026-09-14T11:30:00Z') },
+  };
+
+  function verifierOver(points: Record<string, number[] | null>) {
+    const observability = {
+      kind: 'observability' as const,
+      async queryMetric(_s: string, metric: string, range: { from: Date }) {
+        const key = range.from.getTime() === windows.baselineWindow.from.getTime()
+          ? 'baseline'
+          : range.from.getTime() === windows.incidentWindow.from.getTime()
+            ? 'incident'
+            : 'post';
+        const values = points[`${metric}:${key}`];
+        return {
+          metric, service: 's', environment: 'production' as const, unit: 'ratio',
+          points: (values ?? []).map((value, i) => ({ at: new Date(Date.now() + i), value })),
+        };
+      },
+      async queryLogs() { return []; },
+      async listMonitors() { return []; },
+    };
+    return new RecoveryVerifier(observability as never);
+  }
+
+  const run = async (v: RecoveryVerifier) => {
+    const sink = new InMemorySink();
+    return new AgentTracer({ sink, lemma: null }).run('r', {}, (ctx) =>
+      v.verify(ctx, { service: 's', metrics: ['error_rate'], ...windows }),
+    );
+  };
+
+  it('reports UNVERIFIABLE when no metric could be compared', async () => {
+    // The dangerous case: this used to read as "not recovered", which asserts
+    // something about production that was never observed.
+    const r = await run(verifierOver({}));
+    expect(r.verdict).toBe('UNVERIFIABLE');
+    expect(r.recovered).toBe(false);
+    expect(r.summary).toMatch(/gap in instrumentation, not evidence that the fix failed/);
+  });
+
+  it('reports NOT_RECOVERED when a metric was compared and is still elevated', async () => {
+    const r = await run(verifierOver({
+      'error_rate:baseline': [0.004], 'error_rate:incident': [0.18], 'error_rate:post': [0.17],
+    }));
+    expect(r.verdict).toBe('NOT_RECOVERED');
+    expect(r.summary).toMatch(/Still elevated/);
+  });
+
+  it('reports RECOVERED when the signal returned', async () => {
+    const r = await run(verifierOver({
+      'error_rate:baseline': [0.004], 'error_rate:incident': [0.18], 'error_rate:post': [0.005],
+    }));
+    expect(r.verdict).toBe('RECOVERED');
+    expect(r.recovered).toBe(true);
+  });
+
+  it('never claims recovery from an unmeasured signal', async () => {
+    for (const verdict of ['UNVERIFIABLE'] as const) {
+      const r = await run(verifierOver({}));
+      expect(r.verdict).toBe(verdict);
+      expect(r.recovered).toBe(false);
+    }
   });
 });

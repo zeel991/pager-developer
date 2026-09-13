@@ -270,6 +270,8 @@ export interface WorkflowResult {
   preexistingChecks: ValidationRun | null;
   /** True when a bounded repair retry was used. */
   repairAttempted: boolean;
+  /** What the post-merge evidence supported. Null before recovery is checked. */
+  recoveryVerdict: 'RECOVERED' | 'NOT_RECOVERED' | 'UNVERIFIABLE' | null;
 }
 
 export class IncidentWorkflow {
@@ -300,6 +302,7 @@ export class IncidentWorkflow {
       regressionTest: null,
       preexistingChecks: null,
       repairAttempted: false,
+      recoveryVerdict: null,
     };
 
     const step = (stage: WorkflowStage, summary: string, detail?: Record<string, unknown>): void => {
@@ -936,6 +939,7 @@ export class IncidentWorkflow {
       regressionTest: null,
       preexistingChecks: null,
       repairAttempted: false,
+      recoveryVerdict: null,
     };
     const step = (stage: WorkflowStage, summary: string): void => {
       result.stage = stage;
@@ -997,22 +1001,36 @@ export class IncidentWorkflow {
     result.recovery = recovery;
     step('verifying_recovery', `Recovery ${recovery.recovered ? 'verified' : 'NOT verified'}.`);
 
-    if (!recovery.recovered) {
-      // The incident stays open. A merged fix is not a recovery.
+    // Three outcomes, not two. A signal that stayed bad and a signal nobody could
+    // read both leave the incident open, but only the first says anything about
+    // production — and a write-up is still owed in the second case, because what
+    // happened and what was done are settled even when the aftermath is not.
+    if (recovery.verdict === 'NOT_RECOVERED') {
       result.haltReason =
-        'Signals have not returned to baseline after the merge. The incident remains open ' +
-        'and no write-up is sent, because there is nothing settled to report.';
+        `The fix shipped but production has not recovered. ${recovery.summary} ` +
+        `The incident remains open and no write-up is sent, because there is nothing settled to report.`;
       step('halted', result.haltReason);
       await note('recovery_not_verified', result.haltReason);
       return result;
     }
-    step('recovered', 'Signals returned to baseline.');
-    // RESOLVED is reachable only from VERIFYING_RECOVERY, so this is the single
-    // point in the system where an incident can close.
-    await advance('RESOLVED', 'Signals returned to baseline; recovery verified.');
+
+    if (recovery.verdict === 'RECOVERED') {
+      step('recovered', recovery.summary);
+      // RESOLVED is reachable only from VERIFYING_RECOVERY, so this is the single
+      // point in the system where an incident can close.
+      await advance('RESOLVED', `Signals returned to baseline; recovery verified. ${recovery.summary}`);
+    } else {
+      // Unverifiable. The incident is NOT resolved — closing one whose recovery
+      // nobody could measure would be exactly the false comfort this system is
+      // built to refuse. But the write-up goes out, saying so plainly, because a
+      // human needs the record in order to close it themselves.
+      step('verifying_recovery', `Recovery unverifiable. ${recovery.summary}`);
+      await note('recovery_unverifiable', recovery.summary);
+    }
 
     // ── 8. Write it up in Notion ─────────────────────────────────────────────
     const writeUp = this.writeUp(input.incidentKey, input.alert, input.rootCause, pr, recovery);
+    result.recoveryVerdict = recovery.verdict;
     if (this.deps.knowledge) {
       const doc = await trace('CommunicationAgent', async (ctx) => {
         const { value } = await ctx.tool('notion.createDocument', { title: writeUp.title }, () =>
@@ -1685,13 +1703,19 @@ export class IncidentWorkflow {
       `## Fix`,
       `Pull request #${pr.number} — ${pr.title}. Reviewed and merged by a human.`,
       `## Recovery`,
-      recovery.comparisons
-        .map(
-          (m) =>
-            `- ${m.metric}: baseline ${m.baseline.toFixed(4)}, incident ${m.incident.toFixed(4)}, ` +
-            `now ${m.postRemediation.toFixed(4)} — ${m.reason}`,
-        )
-        .join('\n'),
+      `**${recovery.verdict.replace('_', ' ')}** — ${recovery.summary}`,
+      recovery.comparisons.length > 0
+        ? recovery.comparisons
+            .map(
+              (m) =>
+                `- ${m.metric}: baseline ${m.baseline.toFixed(4)}, incident ${m.incident.toFixed(4)}, ` +
+                `now ${m.postRemediation.toFixed(4)} — ${m.reason}`,
+            )
+            .join('\n')
+        : '_No metric could be compared._',
+      recovery.unverified.length > 0
+        ? `**Not measured** — ${recovery.unverified.map((u) => `${u.metric} (${u.reason})`).join('; ')}`
+        : '',
       `## Notes`,
       `Pager Developer did not make any production change. The only production-affecting ` +
         `action was the human merge of #${pr.number}.`,
