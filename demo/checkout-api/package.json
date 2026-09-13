@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Demo service used by Pager Developer scenarios. Deployed revision contains a real bug.",
   "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
     "test": "node --test",
     "typecheck": "node --experimental-strip-types --check src/checkout/service.ts"
   }
