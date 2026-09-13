@@ -21,7 +21,7 @@ writes the postmortem the next morning.
 Pager Developer does all of that, and stops exactly where a human should take over.
 
 <p align="center">
-  <img src="docs/architecture.png" alt="Pager Developer architecture" width="100%"/>
+  <img src="docs/architecture.svg" alt="Pager Developer architecture" width="100%"/>
 </p>
 
 ## This is running right now
